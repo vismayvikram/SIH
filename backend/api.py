@@ -4,6 +4,9 @@ Provides endpoints for layers, inspection, human edits, topology warnings,
 transparent scoring, model inference stub, benchmark status, and GeoJSON export/import.
 """
 import os
+import json
+import hashlib
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, HTTPException, status, Query, Body, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +26,32 @@ from backend.models.schemas import (
 )
 
 from contextlib import asynccontextmanager
+
+def _file_sha256(path: Optional[str]) -> Optional[str]:
+    if not path or not os.path.isfile(path):
+        return None
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def _persist_model_run(result: Dict[str, Any], mode: str, run_id: str, metadata: Dict[str, Any]) -> str:
+    run_dir = os.path.join("data", "local_model_run", "runs", mode, run_id)
+    os.makedirs(run_dir, exist_ok=True)
+    output_path = os.path.join(run_dir, "predictions.geojson")
+    artifact = {
+        **result,
+        "model_metadata": {
+            **metadata,
+            "run_id": run_id,
+            "output_path": output_path,
+            "valid_feature_count": len(result.get("features", [])),
+        },
+    }
+    with open(output_path, "w", encoding="utf-8") as handle:
+        json.dump(artifact, handle, indent=2)
+    return output_path
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -229,7 +258,7 @@ def create_draft(req: DraftFeatureCreateRequest):
     return {"status": "success", "feature": draft}
 
 from fastapi import FastAPI, HTTPException, status, Query, Body, Response, BackgroundTasks
-from backend.services.model_adapter import MockBuildingModel, WHUBuildingModel, BenchmarkDatasetAdapter, ModelInferenceError
+from backend.services.model_adapter import MockBuildingModel, WHUBuildingModel, DeepLabBuildingModel, BenchmarkDatasetAdapter, ModelInferenceError
 from backend.services.whu_model import job_manager, run_whu_live_inference
 
 @app.post("/api/models/predict")
@@ -240,26 +269,102 @@ def predict_building_model(req: ModelPredictRequest):
     - 'mock': Mock provider fallback for developer verification
     - 'precomputed': Demo output loaded from local manifest
     """
-    if req.mode == "live":
-        model = WHUBuildingModel(model_name=req.model_name, model_version=req.model_version)
-    else:
-        model = MockBuildingModel(model_name=req.model_name, model_version=req.model_version)
-
     try:
-        result = model.predict(
-            confidence_threshold=req.confidence_threshold,
-            simulate_failure=req.simulate_failure
-        )
-        added_features = store.add_ai_predicted_features(result["features"])
+        output_path = None
+        if req.mode == "precomputed":
+            output_path = os.path.join("data", "local_model_run", "predicted_buildings_4326.geojson")
+            with open(output_path, "r", encoding="utf-8") as handle:
+                result = json.load(handle)
+            metadata = result.get("model_metadata", {})
+        else:
+            if req.mode == "live":
+                model = WHUBuildingModel(model_name=req.model_name, model_version=req.model_version)
+            elif req.mode == "deeplab":
+                model = DeepLabBuildingModel(
+                    model_name=req.model_name or "aatifjiwani/rgb-footprint-extract",
+                    model_version=req.model_version or "418c63b",
+                    checkpoint_name="spacenet",
+                )
+            elif req.mode == "mock":
+                model = MockBuildingModel(model_name=req.model_name, model_version=req.model_version)
+            else:
+                raise HTTPException(status_code=400, detail=f"Unknown model provider '{req.mode}'.")
+            result = model.predict(
+                confidence_threshold=req.confidence_threshold,
+                simulate_failure=req.simulate_failure
+            )
+            metadata = result.get("model_metadata", {})
+
+        run_id = metadata.get("run_id") or f"run-{req.mode}-{int(datetime.now(timezone.utc).timestamp())}"
+        provider_id = "whu" if req.mode in {"live", "precomputed"} else req.mode
+        source_mode = {
+            "mock": "mock",
+            "precomputed": "saved",
+            "live": "fresh",
+            "deeplab": "fresh",
+        }[req.mode]
+        provider_label = {
+            "mock": "Mock predictions",
+            "precomputed": "WHU saved run",
+            "live": "Fresh WHU inference",
+            "deeplab": "RGB Footprint Extract — SpaceNet checkpoint",
+        }[req.mode]
+        if req.mode != "precomputed":
+            output_path = _persist_model_run(result, req.mode, run_id, metadata)
+        else:
+            output_path = output_path or metadata.get("output_path")
+        source_metadata = {
+            "source_mode": source_mode,
+            "request_mode": req.mode,
+            "provider_id": provider_id,
+            "provider_label": provider_label,
+            "source_label": provider_label,
+            "model_id": metadata.get("model_name", req.model_name),
+            "model_revision": metadata.get("model_version", req.model_version),
+            "run_id": run_id,
+            "output_path": output_path,
+            "checkpoint_sha256": metadata.get("model_weight_sha256") or metadata.get("checkpoint_sha256"),
+            "valid_feature_count": len(result.get("features", [])),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "is_mock": req.mode == "mock",
+            "alignment_status": metadata.get("alignment_status", "confirmed by user in QGIS; local reference set, not an official/legal accuracy benchmark")
+        }
+        status_info = store.set_prediction_source(result.get("features", []), source_metadata)
         return {
             "status": "success",
             "mode": req.mode,
-            "detected_count": len(added_features),
-            "features": added_features,
-            "metadata": result.get("model_metadata")
+            "detected_count": status_info["prediction_count"],
+            "features": store.layers["ai_predictions"],
+            "metadata": {**metadata, **status_info}
         }
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Saved WHU prediction GeoJSON was not found.")
     except ModelInferenceError as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@app.get("/api/models/prediction-source")
+def get_prediction_source():
+    """Return the explicit active prediction source, or an empty selection."""
+    return store.get_prediction_status()
+
+
+@app.post("/api/models/select-precomputed")
+def select_precomputed_prediction():
+    """Select the saved WHU GeoJSON without modifying that artifact."""
+    return predict_building_model(ModelPredictRequest(mode="precomputed"))
+
+
+@app.post("/api/models/select-deeplab")
+def select_deeplab_prediction():
+    """Select the DeepLab candidate model if the checkpoint is available."""
+    return predict_building_model(ModelPredictRequest(mode="deeplab"))
+
+
+@app.delete("/api/models/prediction-source")
+def clear_prediction_source():
+    """Clear the active layer while retaining all saved model artifacts."""
+    return store.clear_prediction_source()
 
 @app.post("/api/models/run-inference")
 def start_live_model_job(background_tasks: BackgroundTasks, confidence_threshold: float = Body(0.50, embed=True)):
@@ -277,7 +382,21 @@ def start_live_model_job(background_tasks: BackgroundTasks, confidence_threshold
     def _run_task():
         try:
             res = run_whu_live_inference(confidence_threshold=confidence_threshold)
-            store.add_ai_predicted_features(res.get("features", []))
+            metadata = res.get("model_metadata", {})
+            store.set_prediction_source(res.get("features", []), {
+                "source_mode": "fresh",
+                "request_mode": "live",
+                "provider_id": "whu",
+                "provider_label": "Fresh WHU inference",
+                "source_label": "Fresh WHU inference",
+                "model_id": metadata.get("model_name", "giswqs/whu-building-unetplusplus-efficientnet-b4"),
+                "model_revision": metadata.get("model_version"),
+                "run_id": metadata.get("run_id"),
+                "output_path": "data/local_model_run/predicted_buildings_4326.geojson",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "is_mock": False,
+                "alignment_status": metadata.get("alignment_status", "confirmed by user in QGIS; local reference set, not an official/legal accuracy benchmark")
+            })
         except Exception as e:
             job_manager.fail_job(str(e))
 
@@ -372,7 +491,8 @@ def get_model_reference_discrepancy(iou_threshold: float = Query(0.35, ge=0.05, 
     The reference footprints are not an 'old' layer — they are same-area annotations.
     """
     store.initialize()
-    ai_preds = store.layers["ai_predictions"]
+    prediction_status = store.get_prediction_status()
+    ai_preds = store.layers["ai_predictions"] if prediction_status["selected"] else []
     reference = store.layers["buildings"]
 
     if not ai_preds:
@@ -381,11 +501,20 @@ def get_model_reference_discrepancy(iou_threshold: float = Query(0.35, ge=0.05, 
             "message": "No AI model predictions loaded. Run model inference first via POST /api/models/predict.",
             "disclaimer": "This comparator shows same-area AI-vs-reference disagreement. "
                           "It is NOT temporal change detection. Reference features are unverified annotations.",
-            "alignment_status": "provisional—reference alignment not user-confirmed"
+            "alignment_status": "confirmed by user in QGIS; local reference set, not an official/legal accuracy benchmark",
+            "prediction_source": prediction_status,
+            "valid_prediction_count": 0,
+            "valid_reference_count": len(store.layers["buildings"]),
+            "invalid_prediction_count": 0,
+            "invalid_reference_count": 0
         }
 
     import shapely.geometry
+    import shapely.ops
+    import pyproj
     from backend.services.model_adapter import BenchmarkDatasetAdapter
+
+    transformer = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:32643", always_xy=True)
 
     def parse_shape(feat):
         geom = feat.get("geometry")
@@ -393,33 +522,38 @@ def get_model_reference_discrepancy(iou_threshold: float = Query(0.35, ge=0.05, 
             return None
         try:
             s = shapely.geometry.shape(geom)
-            return s if s.is_valid else None
+            if not s.is_valid:
+                s = s.buffer(0)
+            if s.is_empty:
+                return None
+            return shapely.ops.transform(transformer.transform, s)
         except Exception:
             return None
 
-    ref_shapes = [(f["id"], parse_shape(f)) for f in reference]
+    ref_shapes_all = [(f["id"], parse_shape(f)) for f in reference]
+    pred_shapes_all = [(f["id"], parse_shape(f)) for f in ai_preds]
+    invalid_ref_count = sum(1 for _, shape in ref_shapes_all if shape is None)
+    invalid_pred_count = sum(1 for _, shape in pred_shapes_all if shape is None)
+    ref_shapes = ref_shapes_all
     ref_shapes = [(fid, s) for fid, s in ref_shapes if s]
-    pred_shapes = [(f["id"], parse_shape(f)) for f in ai_preds]
+    pred_shapes = pred_shapes_all
     pred_shapes = [(fid, s) for fid, s in pred_shapes if s]
 
     matched_ref = set()
     matched_pred = set()
     matched_pairs = []
 
-    for pid, ps in pred_shapes:
-        best_iou = 0.0
-        best_rid = None
-        for rid, rs in ref_shapes:
-            if rid in matched_ref:
-                continue
-            iou = BenchmarkDatasetAdapter.compute_polygon_iou(rs, ps)
-            if iou > best_iou:
-                best_iou = iou
-                best_rid = rid
-        if best_iou >= iou_threshold and best_rid:
-            matched_ref.add(best_rid)
-            matched_pred.add(pid)
-            matched_pairs.append({"ai_id": pid, "ref_id": best_rid, "iou": round(best_iou, 4)})
+    candidates = sorted(
+        ((BenchmarkDatasetAdapter.compute_polygon_iou(rs, ps), pid, rid)
+         for pid, ps in pred_shapes for rid, rs in ref_shapes),
+        key=lambda item: (-item[0], item[1], item[2])
+    )
+    for iou, pid, rid in candidates:
+        if iou < iou_threshold or pid in matched_pred or rid in matched_ref:
+            continue
+        matched_ref.add(rid)
+        matched_pred.add(pid)
+        matched_pairs.append({"ai_id": pid, "ref_id": rid, "iou": round(iou, 4)})
 
     model_only = [pid for pid, _ in pred_shapes if pid not in matched_pred]
     ref_only = [rid for rid, _ in ref_shapes if rid not in matched_ref]
@@ -427,18 +561,22 @@ def get_model_reference_discrepancy(iou_threshold: float = Query(0.35, ge=0.05, 
     tp = len(matched_pred)
     fp = len(model_only)
     fn = len(ref_only)
-    precision = round(tp / (tp + fp), 4) if (tp + fp) > 0 else 0.0
-    recall = round(tp / (tp + fn), 4) if (tp + fn) > 0 else 0.0
-    f1 = round((2 * precision * recall) / (precision + recall), 4) if (precision + recall) > 0 else 0.0
+    precision_raw = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall_raw = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1_raw = (2 * precision_raw * recall_raw) / (precision_raw + recall_raw) if (precision_raw + recall_raw) > 0 else 0.0
+    precision = round(precision_raw, 4)
+    recall = round(recall_raw, 4)
+    f1 = round(f1_raw, 4)
 
     return {
         "status": "discrepancies_computed",
-        "alignment_status": "provisional—reference alignment not user-confirmed",
+        "alignment_status": "confirmed by user in QGIS; local reference set, not an official/legal accuracy benchmark",
         "comparator_nature": "Same-area spatial disagreement check (NOT temporal change detection)",
         "disclaimer": "Model vs Reference Discrepancy: same-area AI-vs-annotation disagreement check. "
-                      "NOT temporal change detection. 317 reference footprints are unverified visual annotations "
-                      "(Project Vaayu sample, not ground truth). This is a prototype heuristic.",
+                      "NOT temporal change detection. 317 reference footprints are a user-aligned local reference set "
+                      "(Project Vaayu sample, not an official or legal accuracy benchmark). This is a prototype heuristic.",
         "iou_matching_threshold": iou_threshold,
+        "prediction_source": prediction_status,
         "metrics": {
             "matched_pairs_count": len(matched_pairs),
             "model_only_detections": len(model_only),
@@ -449,6 +587,10 @@ def get_model_reference_discrepancy(iou_threshold: float = Query(0.35, ge=0.05, 
         },
         "total_reference_features": len(ref_shapes),
         "total_ai_predictions": len(pred_shapes),
+        "valid_prediction_count": len(pred_shapes),
+        "valid_reference_count": len(ref_shapes),
+        "invalid_prediction_count": invalid_pred_count,
+        "invalid_reference_count": invalid_ref_count,
         "matched_pairs": matched_pairs[:20],
         "model_only_features": model_only[:20],
         "reference_only_features": ref_only[:20],

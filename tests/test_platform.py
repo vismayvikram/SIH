@@ -51,6 +51,8 @@ from backend.services.geometry_utils import (
 )
 from backend.services.model_adapter import (
     MockBuildingModel,
+    WHUBuildingModel,
+    DeepLabBuildingModel,
     BenchmarkDatasetAdapter,
     ModelInferenceError
 )
@@ -63,7 +65,7 @@ from backend.services.model_adapter import (
 @pytest.fixture
 def clean_store():
     """Provides an isolated, freshly initialized FeatureStore instance."""
-    s = FeatureStore()
+    s = FeatureStore(state_file_path=None)
     s.initialize(force_reload=True)
     return s
 
@@ -827,6 +829,70 @@ class TestTopologyEdgeCases:
 # 17. Discrepancy & Parcel RAG Endpoints Tests
 # ==============================================================================
 
+class TestDeepLabCandidateAdapter:
+    def test_deeplab_candidate_has_distinct_model_identity(self):
+        whu = WHUBuildingModel()
+        deeplab = DeepLabBuildingModel()
+        assert whu.model_name != deeplab.model_name
+        assert deeplab.model_version == "418c63b"
+        assert deeplab.MODEL_ID == "aatifjiwani/rgb-footprint-extract"
+
+    def test_deeplab_candidate_rejects_placeholder_checkpoint(self, tmp_path):
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_origin
+
+        raster_path = tmp_path / "synthetic_rgb.tif"
+        arr = np.zeros((64, 64, 3), dtype=np.uint8)
+        arr[10:30, 10:30, :] = 200
+        arr[40:55, 20:40, :] = 180
+
+        with rasterio.open(
+            raster_path,
+            "w",
+            driver="GTiff",
+            height=64,
+            width=64,
+            count=3,
+            dtype="uint8",
+            crs="EPSG:3857",
+            transform=from_origin(0, 64, 1, 1),
+        ) as dst:
+            dst.write(arr.transpose(2, 0, 1))
+
+        checkpoint_path = tmp_path / "best_miou_checkpoint.pth.tar"
+        checkpoint_path.write_bytes(b"stub-checkpoint")
+
+        model = DeepLabBuildingModel(checkpoint_name="spacenet", raster_path=str(raster_path), checkpoint_path=str(checkpoint_path))
+        with pytest.raises(ModelInferenceError, match="DeepLab checkpoint not found"):
+            model.predict(confidence_threshold=0.5)
+
+    def test_deeplab_candidate_missing_checkpoint_fails_explicitly(self, tmp_path):
+        raster_path = tmp_path / "synthetic_rgb.tif"
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_origin
+
+        arr = np.zeros((16, 16, 3), dtype=np.uint8)
+        arr[2:6, 2:6] = 255
+        with rasterio.open(
+            raster_path,
+            "w",
+            driver="GTiff",
+            height=16,
+            width=16,
+            count=3,
+            dtype="uint8",
+            crs="EPSG:3857",
+            transform=from_origin(0, 16, 1, 1),
+        ) as dst:
+            dst.write(arr.transpose(2, 0, 1))
+
+        model = DeepLabBuildingModel(raster_path=str(raster_path), checkpoint_path=str(tmp_path / "missing_checkpoint.pth.tar"))
+        with pytest.raises(ModelInferenceError, match="DeepLab checkpoint not found"):
+            model.predict(confidence_threshold=0.5)
+
+
 class TestDiscrepancyAndParcelEndpoints:
     def test_discrepancy_endpoint_no_predictions(self, client):
         """GET /api/models/discrepancy should return no_predictions when AI layer is empty."""
@@ -901,11 +967,11 @@ class TestModelSprintRequirements:
         assert found_bld[1]["properties"]["notes"] == "Verified by test suite"
 
     def test_discrepancy_endpoint_threshold_and_provisional_label(self, client):
-        """Discrepancy endpoint must return provisional alignment notice and handle threshold parameter."""
+        """Discrepancy endpoint must return confirmed alignment status and handle threshold parameter."""
         res = client.get("/api/models/discrepancy?iou_threshold=0.50")
         assert res.status_code == 200
         data = res.json()
-        assert data["alignment_status"] == "provisional—reference alignment not user-confirmed"
+        assert data["alignment_status"].startswith("confirmed by user in QGIS")
         if data["status"] == "discrepancies_computed":
             assert data["iou_matching_threshold"] == 0.50
 
@@ -931,6 +997,54 @@ class TestModelSprintRequirements:
         res = client.post("/api/models/predict", json={"mode": "mock", "simulate_failure": True})
         assert res.status_code == 500
         assert "Simulated Model Failure" in res.json()["detail"]
+
+    def test_saved_whu_source_is_evaluated_instead_of_persisted_mock(self, client):
+        """The saved WHU artifact is the selected collection used by discrepancy scoring."""
+        client.delete("/api/models/prediction-source")
+        selected = client.post("/api/models/select-precomputed")
+        assert selected.status_code == 200
+        assert selected.json()["metadata"]["source_label"] == "WHU saved run"
+        assert selected.json()["detected_count"] == 67
+
+        result = client.get("/api/models/discrepancy?iou_threshold=0.35").json()
+        assert result["prediction_source"]["source_mode"] == "saved"
+        assert result["valid_prediction_count"] == 67
+        assert result["valid_reference_count"] == 317
+        assert result["metrics"]["matched_pairs_count"] == 8
+        assert result["metrics"]["model_only_detections"] == 59
+        assert result["metrics"]["reference_only_footprints"] == 309
+
+    def test_prediction_modes_do_not_mix_and_clear_is_explicit(self, client):
+        mock_result = client.post("/api/models/predict", json={"mode": "mock", "confidence_threshold": 0.5}).json()
+        assert mock_result["metadata"]["source_label"] == "Mock predictions"
+        assert mock_result["detected_count"] == 3
+
+        whu_result = client.post("/api/models/select-precomputed").json()
+        assert whu_result["metadata"]["source_label"] == "WHU saved run"
+        assert whu_result["detected_count"] == 67
+        assert {feature["id"] for feature in whu_result["features"]}.isdisjoint(
+            {"AI-BLD-001", "AI-BLD-002", "AI-BLD-003"}
+        )
+
+        cleared = client.delete("/api/models/prediction-source").json()
+        assert cleared["selected"] is False
+        assert client.get("/api/models/discrepancy").json()["status"] == "no_predictions"
+
+    def test_legacy_prediction_state_cannot_activate_without_metadata(self, tmp_path):
+        import json
+        state_path = tmp_path / "legacy-state.json"
+        state_path.write_text(json.dumps({"ai_predictions": [{"id": "AI-BLD-001"}]}))
+        isolated_store = FeatureStore(state_file_path=str(state_path))
+        isolated_store.initialize()
+        assert isolated_store.get_prediction_status()["selected"] is False
+        assert isolated_store.layers["ai_predictions"] == []
+
+    def test_saved_whu_results_are_stable_at_strict_threshold(self, client):
+        client.post("/api/models/select-precomputed")
+        result = client.get("/api/models/discrepancy?iou_threshold=0.50").json()
+        assert result["metrics"]["matched_pairs_count"] == 4
+        assert result["metrics"]["model_only_detections"] == 63
+        assert result["metrics"]["reference_only_footprints"] == 313
 
     @pytest.mark.model_integration
     def test_whu_live_model_one_tile_and_checkpoint_load(self):

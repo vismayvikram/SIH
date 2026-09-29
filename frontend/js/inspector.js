@@ -112,10 +112,10 @@ export class FeatureInspector {
             <span class="status-badge status-${status}">${status}</span>
           </div>
           <div class="feature-badge-row">
-            <span class="status-badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8;">${ftype}</span>
-            <span class="status-badge" style="background: rgba(168, 85, 247, 0.15); color: #c084fc;">source: ${source}</span>
+            <span class="status-badge" style="background: rgba(180, 137, 84, 0.15); color: #b48954;">${ftype}</span>
+            <span class="status-badge" style="background: rgba(124, 123, 93, 0.15); color: #7c7b5d;">source: ${source}</span>
             ${props.confidence !== null && props.confidence !== undefined ? 
-              `<span class="status-badge" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24;">conf: ${(props.confidence * 100).toFixed(0)}%</span>` : ''}
+              `<span class="status-badge" style="background: rgba(180, 137, 84, 0.15); color: #854628;">conf: ${(props.confidence * 100).toFixed(0)}%</span>` : ''}
           </div>
         </div>
 

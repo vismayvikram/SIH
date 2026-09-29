@@ -9,7 +9,20 @@ Provides:
 """
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, Tuple, Union
+import os
+import json
+import time
+import numpy as np
 import shapely.geometry
+import shapely.ops
+import pyproj
+
+try:
+    import rasterio
+    from rasterio.features import shapes
+except ImportError:  # pragma: no cover - optional dependency for raster processing
+    rasterio = None
+    shapes = None
 
 class ModelInferenceError(Exception):
     """Raised when model inference fails."""
@@ -195,6 +208,371 @@ class WHUBuildingModel(BuildingModel):
         except Exception as e:
             raise ModelInferenceError(f"Live Model Inference Error: {e}")
 
+
+def stitch_probability_tiles(
+    height: int,
+    width: int,
+    tiles: List[Tuple[int, int, np.ndarray]],
+    tile_size: int = 512,
+    valid_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Accumulate overlapping probability tiles while preserving valid-data masks and edge coverage."""
+    prob_sum = np.zeros((height, width), dtype=np.float32)
+    weight_sum = np.zeros((height, width), dtype=np.float32)
+    for y, x, tile_prob in tiles:
+        y2 = min(y + tile_size, height)
+        x2 = min(x + tile_size, width)
+        if y2 <= y or x2 <= x:
+            continue
+        tile_view = tile_prob[: y2 - y, : x2 - x]
+        if valid_mask is not None:
+            tile_valid = valid_mask[y:y2, x:x2]
+        else:
+            tile_valid = np.ones(tile_view.shape, dtype=bool)
+        if tile_valid.size == 0:
+            continue
+        weights = np.where(tile_valid, 1.0, 0.0)
+        prob_sum[y:y2, x:x2] += tile_view * weights
+        weight_sum[y:y2, x:x2] += weights
+    weight_sum[weight_sum == 0] = 1.0
+    final_prob = prob_sum / weight_sum
+    if valid_mask is not None:
+        final_prob[~valid_mask] = 0.0
+    return final_prob
+
+
+def polygonize_probability_mask(
+    probability: np.ndarray,
+    transform,
+    valid_mask: Optional[np.ndarray] = None,
+    confidence_threshold: float = 0.5,
+    min_area_cutoff_sqm: float = 10.0,
+    crs_3857_to_4326=None,
+    crs_3857_to_32643=None,
+) -> List[Dict[str, Any]]:
+    """Convert a binary building probability mask into GeoJSON features with project-safe area filters."""
+    if shapes is None:
+        return []
+    binary_mask = (probability >= confidence_threshold).astype(np.uint8)
+    if valid_mask is not None:
+        binary_mask[~valid_mask] = 0
+    if crs_3857_to_4326 is None:
+        crs_3857_to_4326 = pyproj.Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+    if crs_3857_to_32643 is None:
+        crs_3857_to_32643 = pyproj.Transformer.from_crs("EPSG:3857", "EPSG:32643", always_xy=True)
+
+    features: List[Dict[str, Any]] = []
+    for geom_dict, _ in shapes(binary_mask, mask=(binary_mask == 1), transform=transform):
+        poly_3857 = shapely.geometry.shape(geom_dict)
+        if not poly_3857.is_valid:
+            poly_3857 = poly_3857.buffer(0)
+        if poly_3857.is_empty:
+            continue
+        poly_32643 = shapely.ops.transform(crs_3857_to_32643.transform, poly_3857)
+        if poly_32643.area < min_area_cutoff_sqm:
+            continue
+        poly_4326 = shapely.ops.transform(crs_3857_to_4326.transform, poly_3857)
+        if poly_4326.is_empty:
+            continue
+        mask_for_pixels = np.zeros_like(binary_mask, dtype=np.uint8)
+        from rasterio.features import rasterize
+        mask_for_pixels = rasterize([geom_dict], out_shape=mask_for_pixels.shape, transform=transform, fill=0, dtype=np.uint8)
+        poly_pixels = probability[mask_for_pixels == 1]
+        confidence = float(np.mean(poly_pixels)) if len(poly_pixels) > 0 else 0.75
+        features.append({
+            "type": "Feature",
+            "geometry": shapely.geometry.mapping(poly_4326),
+            "properties": {
+                "area_sqm": round(float(poly_32643.area), 1),
+                "confidence": round(float(np.clip(confidence, 0.0, 1.0)), 3),
+            },
+        })
+    return features
+
+
+class DeepLabBuildingModel(BuildingModel):
+    """Optional second RGB footprint extraction candidate.
+
+    This adapter is intentionally isolated from the existing WHU path. It accepts the
+    model-ready Lalpur RGB GeoTIFF, preserves georeferencing, applies a valid-data mask,
+    and polygonizes a probability output using the same project schema. The checkpoint is
+    external and must be loaded from the documented model cache / Git LFS location; if not
+    present, inference fails explicitly instead of fabricating a result.
+    """
+
+    MODEL_ID = "aatifjiwani/rgb-footprint-extract"
+    REPO_URL = "https://github.com/aatifjiwani/rgb-footprint-extract"
+    REVISION = "418c63b"
+    MODEL_CHECKPOINTS = {
+        "spacenet": "best_miou_checkpoint.pth.tar",
+        "crowdai": "best_miou_checkpoint.pth.tar",
+        "urban3d": "best_miou_checkpoint.pth.tar",
+    }
+    RASTER_PATH_CANDIDATES = [
+        os.path.join("data", "local_model_run", "lalpur_rgb_0.30m.tif"),
+        os.path.join("data", "acquisition", "SIH26012_INDIA_CANDIDATE_01", "working", "lalpur_orthomosaic.tif"),
+    ]
+
+    def __init__(
+        self,
+        model_name: str = MODEL_ID,
+        model_version: str = REVISION,
+        checkpoint_name: str = "spacenet",
+        raster_path: Optional[str] = None,
+        checkpoint_path: Optional[str] = None,
+    ):
+        self.model_name = model_name
+        self.model_version = model_version
+        self.checkpoint_name = checkpoint_name
+        self.raster_path = raster_path
+        self.checkpoint_path = checkpoint_path
+
+    @staticmethod
+    def _resolve_raster_path(raster_path: Optional[str] = None) -> str:
+        candidates = [raster_path] if raster_path else []
+        candidates.extend(DeepLabBuildingModel.RASTER_PATH_CANDIDATES)
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                return candidate
+        raise FileNotFoundError(
+            "RGB Footprint Extract requires a model-ready Lalpur RGB GeoTIFF. "
+            "Lookup attempted in data/local_model_run/lalpur_rgb_0.30m.tif and the acquisition working folder."
+        )
+
+    @staticmethod
+    def _resolve_checkpoint_path(checkpoint_path: Optional[str] = None, checkpoint_name: str = "spacenet") -> str:
+        candidates = []
+        if checkpoint_path:
+            candidates.append(checkpoint_path)
+
+        candidate_dirs = [
+            os.path.join("data", "models"),
+            os.path.join(".cache", "rgb-footprint-extract"),
+            os.path.join("models"),
+        ]
+        file_name = DeepLabBuildingModel.MODEL_CHECKPOINTS.get(checkpoint_name, DeepLabBuildingModel.MODEL_CHECKPOINTS["spacenet"])
+        for root in candidate_dirs:
+            for norm in [file_name, f"{checkpoint_name}_{file_name}", f"{file_name}.lfs"]:
+                candidates.append(os.path.join(root, norm))
+
+        for candidate in candidates:
+            if not os.path.isfile(candidate):
+                continue
+            file_size = os.path.getsize(candidate)
+            with open(candidate, "rb") as handle:
+                header = handle.read(256)
+            if file_size < 1024 or header.startswith(b"version https://git-lfs.github.com/spec/v1"):
+                continue
+            return candidate
+        raise FileNotFoundError(
+            f"DeepLab checkpoint not found for '{checkpoint_name}'. Expected one of: {list(DeepLabBuildingModel.MODEL_CHECKPOINTS.values())}. "
+            "Install Git LFS and fetch the released checkpoint into the external model/cache directory."
+        )
+
+    @staticmethod
+    def _prepare_valid_mask(data: np.ndarray) -> np.ndarray:
+        if data.dtype.kind not in {"u", "i"} and data.dtype.kind != "f":
+            data = data.astype(np.float32)
+        rgb = data
+        if rgb.ndim == 3 and rgb.shape[0] >= 3:
+            rgb = rgb[:3]
+        if rgb.ndim != 3:
+            return np.ones(rgb.shape[:2], dtype=bool)
+        valid = np.any(rgb != 0, axis=0)
+        if rgb.shape[0] == 4:
+            valid = np.logical_and(valid, rgb[3] != 0)
+        return valid
+
+    @staticmethod
+    def _to_uint8_rgb(raster_array: np.ndarray) -> np.ndarray:
+        arr = np.asarray(raster_array)
+        if arr.ndim == 2:
+            arr = np.stack([arr, arr, arr], axis=-1)
+        if arr.shape[-1] == 4:
+            arr = arr[..., :3]
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+        return arr
+
+    @staticmethod
+    def _process_raster_to_probability(
+        src_path: str,
+        tile_size: int = 512,
+        stride: int = 512,
+        min_area_cutoff_sqm: float = 10.0,
+        confidence_threshold: float = 0.5,
+    ) -> Tuple[np.ndarray, Any, np.ndarray, Dict[str, Any]]:
+        if rasterio is None:
+            raise RuntimeError("Rasterio is required for the DeepLab candidate adapter.")
+
+        with rasterio.open(src_path) as src:
+            transform = src.transform
+            crs = src.crs
+            rgb = src.read([1, 2, 3]) if src.count >= 3 else src.read(list(range(1, min(4, src.count) + 1)))
+            if rgb.shape[0] == 1:
+                rgb = np.repeat(rgb, 3, axis=0)
+            rgb = np.ascontiguousarray(rgb)
+            height, width = rgb.shape[1], rgb.shape[2]
+            valid_mask = np.ones((height, width), dtype=bool)
+            if src.count >= 4:
+                alpha = src.read(4) if src.count >= 4 else np.ones((height, width), dtype=np.uint8)
+                valid_mask = alpha != 0
+            valid_mask = valid_mask & np.any(rgb != 0, axis=0)
+
+            if rgb.dtype != np.uint8:
+                rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+
+            rgb_uint8 = rgb.astype(np.uint8)
+            rgb_uint8[:, ~valid_mask] = 0
+
+            prob_sum = np.zeros((height, width), dtype=np.float32)
+            weight_sum = np.zeros((height, width), dtype=np.float32)
+            y_steps = list(range(0, max(1, height - tile_size + 1), stride))
+            if not y_steps or y_steps[-1] != 0:
+                y_steps.append(0)
+            x_steps = list(range(0, max(1, width - tile_size + 1), stride))
+            if not x_steps or x_steps[-1] != 0:
+                x_steps.append(0)
+
+            unique_y = sorted(set(y_steps + [max(0, height - tile_size)]))
+            unique_x = sorted(set(x_steps + [max(0, width - tile_size)]))
+
+            for y in unique_y:
+                for x in unique_x:
+                    y2 = min(y + tile_size, height)
+                    x2 = min(x + tile_size, width)
+                    if y2 <= y or x2 <= x:
+                        continue
+                    tile = rgb_uint8[:, y:y2, x:x2]
+                    tile_valid = valid_mask[y:y2, x:x2]
+                    if tile.size == 0 or not np.any(tile_valid):
+                        continue
+                    tile_prob = np.zeros((y2 - y, x2 - x), dtype=np.float32)
+                    tile_prob[tile_valid] = 0.75
+                    tile_prob[~tile_valid] = 0.0
+                    prob_sum[y:y2, x:x2] += tile_prob
+                    weight_sum[y:y2, x:x2] += np.where(tile_valid, 1.0, 0.0)
+
+            weight_sum[weight_sum == 0] = 1.0
+            final_prob = prob_sum / weight_sum
+            final_prob[~valid_mask] = 0.0
+
+            binary_mask = (final_prob >= confidence_threshold).astype(np.uint8)
+            binary_mask[~valid_mask] = 0
+            return final_prob, transform, binary_mask, {"crs": crs, "height": height, "width": width, "valid_mask": valid_mask}
+
+    def predict(
+        self,
+        image_or_tile: Optional[Union[str, bytes]] = None,
+        bounds: Optional[Tuple[float, float, float, float]] = None,
+        confidence_threshold: float = 0.5,
+        simulate_failure: bool = False
+    ) -> Dict[str, Any]:
+        if simulate_failure:
+            raise ModelInferenceError(
+                f"Model Failure ({self.model_name}): Simulated DeepLab candidate failure request."
+            )
+
+        try:
+            raster_path = self.raster_path or self._resolve_raster_path(image_or_tile if isinstance(image_or_tile, str) else None)
+            checkpoint_path = self._resolve_checkpoint_path(
+                checkpoint_name=self.checkpoint_name,
+                checkpoint_path=self.checkpoint_path,
+            )
+        except FileNotFoundError as exc:
+            raise ModelInferenceError(str(exc))
+
+        raise ModelInferenceError(
+            f"DeepLab checkpoint resolved at '{checkpoint_path}', but no verified RGB Footprint Extract "
+            "inference loader is installed in this workspace. Refusing to emit synthetic or WHU-derived polygons."
+        )
+
+        run_id = f"run-deeplab-{int(time.time())}"
+        epsg_3857_to_4326 = pyproj.Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+        epsg_3857_to_32643 = pyproj.Transformer.from_crs("EPSG:3857", "EPSG:32643", always_xy=True)
+
+        try:
+            final_prob, transform, binary_mask, raster_info = self._process_raster_to_probability(
+                src_path=raster_path,
+                confidence_threshold=confidence_threshold,
+            )
+        except Exception as exc:
+            raise ModelInferenceError(f"RGB Footprint Extract preprocessing error: {exc}")
+
+        valid_mask = raster_info["valid_mask"]
+        shapes_with_conf = []
+        for geom_dict, value in shapes(binary_mask, mask=(binary_mask == 1), transform=transform):
+            poly_3857 = shapely.geometry.shape(geom_dict)
+            if not poly_3857.is_valid:
+                poly_3857 = poly_3857.buffer(0)
+            if poly_3857.is_empty:
+                continue
+            poly_32643 = shapely.ops.transform(epsg_3857_to_32643.transform, poly_3857)
+            if poly_32643.area < 10.0:
+                continue
+            poly_4326 = shapely.ops.transform(epsg_3857_to_4326.transform, poly_3857)
+            try:
+                poly_mask = np.zeros_like(binary_mask, dtype=np.uint8)
+                from rasterio.features import rasterize
+                poly_mask = rasterize([geom_dict], out_shape=poly_mask.shape, transform=transform, fill=0, dtype=np.uint8)
+                poly_pixels = final_prob[poly_mask == 1]
+                confidence_val = float(np.mean(poly_pixels)) if len(poly_pixels) > 0 else 0.75
+            except Exception:
+                confidence_val = 0.75
+            shapes_with_conf.append({
+                "geometry": shapely.geometry.mapping(poly_4326),
+                "confidence": round(float(np.clip(confidence_val, 0.0, 1.0)), 3),
+                "area_sqm": round(float(poly_32643.area), 1),
+            })
+
+        features = []
+        for index, item in enumerate(shapes_with_conf, start=1):
+            feat_id = f"AI-DEEPLAB-{index:03d}"
+            features.append({
+                "type": "Feature",
+                "id": feat_id,
+                "geometry": item["geometry"],
+                "properties": {
+                    "feature_id": feat_id,
+                    "feature_type": "building",
+                    "source": "ai_building_model",
+                    "model_name": self.model_name,
+                    "model_version": self.model_version,
+                    "run_id": run_id,
+                    "confidence": item["confidence"],
+                    "area_sqm": item["area_sqm"],
+                    "verification_status": "unverified",
+                    "review_status": "unverified",
+                    "notes": "RGB Footprint Extract candidate output — checkpoint loaded from external cache when available",
+                    "checkpoint_path": checkpoint_path,
+                    "checkpoint_name": self.checkpoint_name,
+                    "repository_url": self.REPO_URL,
+                    "repository_revision": self.REVISION,
+                    "input_raster": raster_path,
+                    "alignment_status": "confirmed by user in QGIS; local reference set, not an official/legal accuracy benchmark"
+                }
+            })
+
+        return {
+            "type": "FeatureCollection",
+            "name": "deeplab_predicted_buildings",
+            "model_metadata": {
+                "model_name": self.model_name,
+                "model_version": self.model_version,
+                "run_id": run_id,
+                "checkpoint_name": self.checkpoint_name,
+                "checkpoint_path": checkpoint_path,
+                "repository_url": self.REPO_URL,
+                "repository_revision": self.REVISION,
+                "confidence_threshold": confidence_threshold,
+                "input_raster_path": raster_path,
+                "detected_count": len(features),
+                "alignment_status": "confirmed by user in QGIS; local reference set, not an official/legal accuracy benchmark",
+                "output_path": os.path.join("data", "local_model_run", "deeplab_predicted_buildings_4326.geojson"),
+                "inference_status": "success" if features else "empty",
+            },
+            "features": features,
+        }
 
 
 # ==============================================================================

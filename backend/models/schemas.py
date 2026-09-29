@@ -163,7 +163,7 @@ class DraftFeatureCreateRequest(BaseModel):
     reviewer_label: str = "demo-reviewer"
 
 class ModelPredictRequest(BaseModel):
-    mode: Literal["live", "mock", "precomputed"] = "mock"
+    mode: Literal["live", "mock", "precomputed", "deeplab"] = "mock"
     model_name: str = "giswqs/whu-building-unetplusplus-efficientnet-b4"
     model_version: str = "09df9efd323bbd3d56b98b4857129eb9b5baa2d3"
     confidence_threshold: float = 0.5

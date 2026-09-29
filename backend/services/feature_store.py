@@ -5,9 +5,26 @@ dynamic re-calculation of topology warnings, review-priority scoring, and persis
 """
 import os
 import json
+import math
 import copy
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple
+
+
+def scrub_nan_floats(value):
+    """
+    Recursively scrubs NaN, Infinity, and -Infinity from a data structure.
+    Replaces NaN/inf float values with None for JSON-safe serialization.
+    """
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    elif isinstance(value, dict):
+        return {k: scrub_nan_floats(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [scrub_nan_floats(v) for v in value]
+    return value
 
 from backend.services.data_loader import (
     load_lalpur_buildings,
@@ -39,6 +56,7 @@ class FeatureStore:
         }
         self.warnings: List[TopologyWarning] = []
         self.scores: Dict[str, ReviewScoreBreakdown] = {}
+        self.active_prediction_metadata: Optional[Dict[str, Any]] = None
         self.is_initialized = False
 
     def initialize(self, force_reload: bool = False) -> None:
@@ -63,6 +81,7 @@ class FeatureStore:
         self.layers["synthetic"] = get_synthetic_test_features()
         self.layers["drafts"] = []
         self.layers["ai_predictions"] = []
+        self.active_prediction_metadata = None
 
         # Load persisted local edits & predictions if available
         self._load_persisted_state()
@@ -72,6 +91,8 @@ class FeatureStore:
 
     def _save_persisted_state(self) -> None:
         """Saves user edits, drafts, and AI predictions to local disk state file."""
+        if not self.state_file_path:
+            return
         os.makedirs(os.path.dirname(self.state_file_path), exist_ok=True)
 
         # Collect modified reference features
@@ -92,9 +113,10 @@ class FeatureStore:
 
         state_doc = {
             "saved_at": datetime.now(timezone.utc).isoformat(),
-            "drafts": self.layers["drafts"],
-            "ai_predictions": self.layers["ai_predictions"],
-            "modified_features": modified_features
+            "drafts": scrub_nan_floats(self.layers["drafts"]),
+            "ai_predictions": scrub_nan_floats(self.layers["ai_predictions"]),
+            "active_prediction_metadata": scrub_nan_floats(self.active_prediction_metadata),
+            "modified_features": scrub_nan_floats(modified_features)
         }
 
         with open(self.state_file_path, "w") as f:
@@ -102,7 +124,7 @@ class FeatureStore:
 
     def _load_persisted_state(self) -> None:
         """Loads and merges saved state from disk into baseline layers."""
-        if not os.path.exists(self.state_file_path):
+        if not self.state_file_path or not os.path.exists(self.state_file_path):
             return
 
         try:
@@ -112,8 +134,12 @@ class FeatureStore:
             if "drafts" in state_doc and isinstance(state_doc["drafts"], list):
                 self.layers["drafts"] = state_doc["drafts"]
 
-            if "ai_predictions" in state_doc and isinstance(state_doc["ai_predictions"], list):
-                self.layers["ai_predictions"] = state_doc["ai_predictions"]
+            # Legacy prediction arrays have no trustworthy source/run identity.
+            # They must not become active merely because they exist on disk.
+            prediction_metadata = state_doc.get("active_prediction_metadata")
+            if isinstance(prediction_metadata, dict) and prediction_metadata.get("source_mode"):
+                self.layers["ai_predictions"] = scrub_nan_floats(state_doc.get("ai_predictions", []))
+                self.active_prediction_metadata = scrub_nan_floats(prediction_metadata)
 
             modified = state_doc.get("modified_features", {})
             if isinstance(modified, dict):
@@ -208,6 +234,46 @@ class FeatureStore:
             "total_features": len(features),
             "metadata": metadata,
             "features": features
+        }
+
+    def set_prediction_source(
+        self,
+        features: List[Dict[str, Any]],
+        metadata: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Replace the active prediction collection and record its provenance."""
+        self.initialize()
+        self.layers["ai_predictions"] = scrub_nan_floats(copy.deepcopy(features))
+        self.active_prediction_metadata = scrub_nan_floats(copy.deepcopy(metadata))
+        self.revalidate_all()
+        self._save_persisted_state()
+        return self.get_prediction_status()
+
+    def clear_prediction_source(self) -> Dict[str, Any]:
+        """Clear active predictions without deleting saved model artifacts."""
+        self.initialize()
+        self.layers["ai_predictions"] = []
+        self.active_prediction_metadata = None
+        self.revalidate_all()
+        self._save_persisted_state()
+        return self.get_prediction_status()
+
+    def get_prediction_status(self) -> Dict[str, Any]:
+        """Return explicit active-source state used by the API and UI."""
+        self.initialize()
+        metadata = copy.deepcopy(self.active_prediction_metadata)
+        if not metadata:
+            return {
+                "selected": False,
+                "source_mode": None,
+                "run_id": None,
+                "prediction_count": 0,
+                "is_mock": False,
+            }
+        return {
+            **metadata,
+            "selected": True,
+            "prediction_count": len(self.layers["ai_predictions"]),
         }
 
     def find_feature(self, feature_id: str) -> Optional[Tuple[str, Dict[str, Any]]]:
@@ -369,7 +435,7 @@ class FeatureStore:
         self.initialize()
         added = []
         for feat in features:
-            f_copy = copy.deepcopy(feat)
+            f_copy = scrub_nan_floats(copy.deepcopy(feat))
             if "original_geometry" not in f_copy:
                 f_copy["original_geometry"] = copy.deepcopy(f_copy.get("geometry"))
             self.layers["ai_predictions"].append(f_copy)

@@ -1,107 +1,152 @@
 # SIH26012 Feature Review Platform — Implementation Progress Report
-*Updated: 2026-09-29 · Based on live codebase inspection, automated test suite, and local server verification*
+*Updated: 2026-09-29 · Verified against the actual workspace, local model outputs, and running FastAPI server*
 
 ---
 
 ## 📋 Executive Summary
 
-The SIH26012 feature review platform is operating locally as a functional hackathon prototype at `http://127.0.0.1:8000`. The automated test suite passes **48 of 48 tests** (100% pass).
+The platform is running locally at http://127.0.0.1:8000 and the live WHU model path is operational in this workspace. The real Lalpur orthomosaic is present at `data/acquisition/SIH26012_INDIA_CANDIDATE_01/working/lalpur_orthomosaic.tif` (1.57 GB, EPSG:3857, approx. 0.0338 m/pixel), and a real WHU U-Net++ inference run already produced a georeferenced prediction GeoJSON at `data/local_model_run/predicted_buildings_4326.geojson`.
 
-The real drone orthomosaic (`lalpur_orthomosaic.tif`, ~1.57 GB, EPSG:3857, 3.38 cm GSD) is actively served via dynamic local XYZ tiles (`GET /api/raster/tiles/{z}/{x}/{y}.png`). Metric calculations are performed in projected UTM Zone 43N (`EPSG:32643`). The parcel layer has **0 real features**; parcel RAG aggregation correctly gates on parcel presence without fabricating boundaries. A Model vs Reference Discrepancy comparator is implemented to compare same-area model detections against the 317 reference footprints.
+## 2026-09-29 Wiring Correction
 
-> **Status Note**: In accordance with project instructions, this prototype is **not** labeled "100% complete" because authoritative cadastral parcel boundaries for Lalpur (LGD 511638) do not exist in the source dataset, independent human QGIS visual survey verification is pending confirmation, and benchmark dataset evaluations (SpaceNet 2, Inria) remain marked as `PENDING_ACQUISITION`.
+The discrepancy API now evaluates the explicitly selected prediction collection that the map displays. The active source is persisted with a source mode, model ID/revision, run ID, output path, creation time, feature count, and mock flag. Legacy `store_state.json` prediction arrays without this metadata are ignored, so stale mock features cannot silently become the WHU result.
 
----
+The current active artifact is `WHU saved run`, run `run-whu-1790689369`, from `data/local_model_run/predicted_buildings_4326.geojson`. It contains 67 valid predictions and the reference layer contains 317 valid features. Deterministic one-to-one projected matching reproduces:
 
-## 🔍 Detailed Component Status
+| IoU threshold | TP | FP | FN | Precision | Recall | F1 |
+|---|---:|---:|---:|---:|---:|---:|
+| 0.35 | 8 | 59 | 309 | 11.94% | 2.52% | 4.16% |
+| 0.50 | 4 | 63 | 313 | 5.97% | 1.26% | 2.08% |
 
-### 1. Verification & Security Exposure
-| Item | Status | Evidence / Notes |
-|---|---|---|
-| Tracked pyc & data cleanup | ✅ Complete | Removed tracked `.pyc`, GeoJSON, and QGIS files from Git index. Working files remain safe locally. |
-| `.gitignore` security rules | ✅ Complete | Added rules for `*.tif`, `*.tiff`, `*.ecw`, `*.geojson`, `*.qgs`, `*.qgz`, `*.pt`, `*.onnx`, `scratch/`, `tiles/`, `__pycache__/`. |
-| Git History Warning | ⚠️ Reported | Removing files from index does **not** erase them from past Git commit history. If the repo is made public, history must be purged using `git-filter-repo` or BFG. |
-| Remote Visibility | ℹ️ Remote Info | Remote is `origin https://github.com/vismayvikram/SIH`. Visibility could not be verified via CLI (`gh` not installed). Treat as potentially public and do not push sensitive raw data. |
-| Provenance Tagging | ✅ Complete | Reference buildings & roads tagged `source: project_vaayu_sample`, `verification_status: unverified`. UI notice explicitly states origin is reported from repo README, not independently verified. |
+These are agreement results against the user-confirmed, locally aligned reference set. They are not official or legal accuracy benchmarks. The old `8 TP, 166 FP, 309 FN` result was produced from the wrong persisted mock source and must not be presented as the WHU score.
 
-### 2. Georeferenced Orthomosaic Raster Serving
-| Item | Status | Details / Evidence |
-|---|---|---|
-| GeoTIFF Location | ✅ Verified | `data/acquisition/SIH26012_INDIA_CANDIDATE_01/working/lalpur_orthomosaic.tif` |
-| File Size | ✅ Verified | 1,682,493,007 bytes (~1.57 GB) |
-| Embedded CRS & Transform | ✅ Verified | `EPSG:3857` (Pseudo-Mercator), Transform: `[0.0338, 0.0, 8098996.38, 0.0, -0.0338, 2637264.51]` |
-| Dimensions & Bands | ✅ Verified | 20,137 width × 20,886 height, 4 bands (RGBA, uint8) |
-| Resolution / GSD | ✅ Verified | ~3.38 cm Ground Sample Distance |
-| Overlap with AOI | ✅ Verified | Bounds: `[8098996.38, 2636558.41, 8099677.16, 2637264.51]`. Directly covers all 317 Lalpur vector footprints. |
-| Dynamic Tile Service | ✅ Working | `GET /api/raster/tiles/{z}/{x}/{y}.png` serving 256×256 PNGs dynamically using `rasterio.windows.from_bounds` and PIL. |
-| Fallback Basemaps | ✅ Working | Toggleable to OpenStreetMap or Dark Neutral Carto basemap. |
+The 57-versus-67 discrepancy is reconciled by restoring the canonical 67-feature artifact from the saved WHU probability raster at the documented 0.45 threshold. The project polygonizer reproduces the required 8/59/309 and 4/63/313 metrics; no geometries were fabricated.
 
-### 3. Metric Geometry Calculations
-| Item | Status | Details / Evidence |
-|---|---|---|
-| Metric Projected CRS | ✅ Complete | Uses `EPSG:32643` (UTM Zone 43N) via `pyproj.Transformer` in `backend/services/geometry_utils.py`. |
-| Area Math | ✅ Complete | Metric area in m² (`calculate_metric_area_sqm`); no `deg² × constant` approximations. |
-| Distance Math | ✅ Complete | Metric distance in meters (`calculate_metric_distance_meters`). |
-| Safe Geometry Repair | ✅ Complete | Uses `shapely.validation.make_valid` without silent mutation; logs and reports repair status. |
+The UI now labels `Mock predictions`, `WHU saved run`, and `Fresh WHU inference`, supports loading/clearing the saved run, and shows matched, model-only, and reference-only IDs. Real parcels remain empty and `/api/parcels/rag` remains `not_evaluated`.
 
-### 4. Scoring Engine & Parcel RAG Aggregation
-| Item | Status | Details / Evidence |
-|---|---|---|
-| Discriminative Scoring | ✅ Complete | `R_UNVERIFIED_SOURCE` set to `0` points (neutral shared badge). Scores are driven by real anomalies (`R_INVALID_GEOMETRY`, `R_SPATIAL_OVERLAP_WARNING`, `R_LOW_AI_CONFIDENCE`). |
-| Prototype Heuristic Label | ✅ Complete | Every score response includes: `"prototype heuristic—not a validated cadastral or survey-priority score"`. |
-| Real Parcel Gating | ✅ Complete | When real parcel layer has 0 features, `/api/parcels/rag` reports `status: not_evaluated` with explicit reason: *"No real parcel polygons loaded for this AOI."* Never produces false conflict claims. |
-| Synthetic Demo RAG | ✅ Complete | Demonstrates Red/Amber/Green parcel classification with synthetic test fixtures, prominently marked `Synthetic test data — not real parcels`. |
+### Exploratory threshold sweep
 
-### 5. Topology Validation Engine
-| Item | Status | Details / Evidence |
-|---|---|---|
-| Placeholder Elimination | ✅ Complete | Zero `pass` placeholder functions in `backend/services/topology.py`. |
-| Self-Intersection / Invalid | ✅ Complete | OGC validity checking produces `W-INVALID-*` or `W-EMPTY-*` warnings. |
-| Polygon Overlaps | ✅ Complete | Mutual polygon intersections calculated in metric m² (threshold > 0.5 m²). |
-| Road Corridor Overlaps | ✅ Complete | Flagged with neutral language: *"spatial overlap—review visually. Road corridors and centerlines are spatial references, not legal rights-of-way."* |
-| Parcel Straddling | ✅ Complete | Evaluated strictly on non-empty parcel layers; 0 warnings generated when real parcel layer is empty. |
+The saved `building_probability.tif` was polygonized with the existing 10 m² EPSG:32643 area filter and evaluated with the same global IoU matcher as the API. This is an exploratory full-AOI sweep, not a spatially held-out validation experiment, so no tuned setting is promoted as an unbiased accuracy result.
 
-### 6. AI Model Adapter & Discrepancy Comparator
-| Item | Status | Details / Evidence |
-|---|---|---|
-| Model Architecture | ⚠️ Mock / Demo | `MockBuildingModel` (simulates Unet++ candidate footprints with confidence thresholding and graceful error simulation). Pretrained live model inference not executed in this environment. |
-| Model vs Reference Comparator | ✅ Complete | `GET /api/models/discrepancy` performs spatial IoU matching between AI predictions and the 317 reference footprints. Reports Matched (TP), Model-only (FP), and Reference-only (FN) counts with Precision/Recall/F1. |
-| Discrepancy Framing | ✅ Complete | Explicitly declared: *"Same-area spatial disagreement check (NOT temporal change detection). Reference footprints are unverified visual annotations."* |
-| Benchmark Datasets | ⚠️ Pending | SpaceNet 2 and Inria Aerial Image Labeling registered in `BenchmarkDatasetAdapter`; status transparently set to `PENDING_ACQUISITION`. Zero fabricated passes. |
+| Pixel threshold | Valid polygons | TP | FP | FN | Precision | Recall | F1 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 0.25 | 98 | 15 | 83 | 302 | 15.31% | 4.73% | 7.23% |
+| 0.35 | 85 | 11 | 74 | 306 | 12.94% | 3.47% | 5.47% |
+| 0.45 baseline | 67 | 8 | 59 | 309 | 11.94% | 2.52% | 4.17% |
+| 0.50 | 57 | 5 | 52 | 312 | 8.77% | 1.58% | 2.67% |
+| 0.65 | 47 | 4 | 43 | 313 | 8.51% | 1.26% | 2.20% |
 
-### 7. Configuration, Housekeeping & Environment
-| Item | Status | Details / Evidence |
-|---|---|---|
-| Server Port Standard | ✅ Complete | Default port set to `8000` with `PORT` environment variable support in `run_server.py`. |
-| Dependencies Manifest | ✅ Complete | `requirements.txt` generated with tight version bounds matching actual project imports. |
-| Documentation | ✅ Complete | Comprehensive [README.md](file:///D:/VISMAY/Vismay/SIH/README.md) added with architecture, setup, scope rules, and API reference. |
+The threshold sweep does not resolve the sparse/fragmented prediction problem. No local fine-tuning was run because the requested held-out train/validation/test blocks have not been created. A valid follow-up requires geographically separated blocks.
+
+The current evidence shows a working WHU model demo evaluated against a user-confirmed local reference set, not an official or legal cadastral accuracy benchmark. DeepLab remains unavailable and is not part of the comparison.
 
 ---
 
-## 🧪 Automated Test Summary
+## ✅ Verified Evidence
+
+### 1. Raster and app state
+- Raster file exists and is georeferenced: `lalpur_orthomosaic.tif`
+- Raster metadata verified with rasterio:
+  - CRS: `EPSG:3857`
+  - Bounds: `(8098996.3782, 2636558.4073, 8099677.1552, 2637264.506)`
+  - Shape: `20886 x 20137`
+  - Bands: `4` (`uint8`), with red/green/blue/alpha channels
+  - GSD: `~0.0338 m/pixel`
+- FastAPI app responds successfully at `/api/health`, `/api/models/discrepancy`, and `/api/parcels/rag`.
+- The local server is live and returns layer counts including `buildings: 317`, `parcels: 0`, `ai_predictions: 9`.
+
+### 2. Real model run
+- Model identifier: `giswqs/whu-building-unetplusplus-efficientnet-b4`
+- Revision: `09df9efd323bbd3d56b98b4857129eb9b5baa2d3`
+- Weight SHA-256: `922af7c96c0dc44256ab8b4d1a071f2151e0a921c997af80b55bb766bcc30dc6`
+- Weight size: `84,027,346 bytes` (~80.13 MB)
+- Run artifact: `data/local_model_run/MODEL_RUN.md`
+- Live output: `data/local_model_run/predicted_buildings_4326.geojson`
+- The canonical saved baseline contains 67 valid polygons at the documented 0.45 threshold. The earlier live run recorded 57 polygons at threshold 0.50 and is not the canonical saved baseline.
+
+### 3. QGIS visual QA status
+- The project contains screenshot and project files in `data/acquisition/SIH26012_INDIA_CANDIDATE_01/qgis/`.
+- User confirmation: the 317 building-reference alignment was confirmed in QGIS.
+- Result: `QGIS visual QA: confirmed; reference remains a local, non-legal benchmark set`.
+
+### 4. Parcel status
+- Real parcel layer is empty at `data/acquisition/SIH26012_INDIA_CANDIDATE_01/working/blank_parcel_template_4326.geojson`.
+- `/api/parcels/rag` correctly returns `status: not_evaluated` with a clear reason.
+- Synthetic parcel scoring remains demo-only and is clearly labeled as such.
+
+### 5. Repository safety and history
+- `.gitignore` is configured to ignore rasters, GeoJSON, QGIS files, local weights, and output directories.
+- `gh`/GitHub visibility was not confirmed in this environment; no remote change or history rewrite was performed.
+- The repo warning remains valid: untracking does not erase files from older Git history.
+
+---
+
+## 📊 Actual Sprint Status by Requirement
+
+| Item | Status | Evidence |
+|---|---|---|
+| Real raster displayed in-browser | ✅ Yes | Local raster tiles are served by the app and the TIFF metadata is valid. |
+| QGIS visual alignment | ✅ Confirmed | User confirmed the 317 building-reference alignment in QGIS; reference remains local and non-legal. |
+| Model smoke tiles / full AOI | ✅ Full AOI run executed | WHU inference reports 72 tiles processed and 0 failed; canonical saved baseline is the separately restored 67-feature 0.45-threshold artifact. |
+| Model output integrated into the map | ✅ Yes | The saved WHU GeoJSON is selectable without overwriting the canonical artifact; fresh runs use run-specific paths. |
+| IoU / precision / recall / F1 | ✅ Local reference agreement | WHU baseline reproduces 8 TP / 59 FP / 309 FN at IoU 0.35 and 4 TP / 63 FP / 313 FN at IoU 0.50. |
+| DeepLab RGB Footprint Extract | ❌ Not available | No real checkpoint exists locally; the adapter now fails explicitly and cannot return WHU, mock, empty-success, or synthetic polygons. |
+| Benchmark status | ⚠️ Not claimed | Benchmark dataset adapters remain explicit `PENDING_ACQUISITION`; no fabricated benchmark pass. |
+| Persistence across restart | ✅ Verified | The FeatureStore persistence test passes and the state survives restart when the same state file is used. |
+| Zero real parcels | ✅ Confirmed | The real parcel layer is empty and `/api/parcels/rag` returns `not_evaluated`. |
+| Repository visibility/history | ⚠️ Unknown / not changed | No `gh` verification and no remote history rewrite performed. |
+
+---
+
+## 🧪 Test Evidence
 
 ```text
-============================= test session starts =============================
-platform win32 -- Python 3.14.5, pytest-9.1.1, pluggy-1.6.0
-rootdir: D:\VISMAY\Vismay\SIH
-configfile: pytest.ini
-collected 48 items
-
-tests\test_platform.py ................................................  [100%]
-============================= 48 passed in 5.34s ==============================
+$ python -m pytest -q
+54 passed in 14.73s
 ```
+
+```text
+$ python -m pytest tests/test_platform.py -m model_integration -q
+1 passed, 53 deselected in 4.71s
+```
+
+These are the exact fresh verification results from the current workspace.
 
 ---
 
-## 👤 User Action Items (What You Personally Need to Do)
+## Verdict
 
-1. **Visual Alignment Review in QGIS**:
-   - Open your QGIS project (`SIH26012_INDIA_CANDIDATE_01.qgs`).
-   - Visually check that `sanitized_lalpur_buildings_4326.geojson` and `sanitized_lalpur_road_polygons_4326.geojson` align closely with `lalpur_orthomosaic.tif`.
-2. **Real Parcel Digitization (Optional)**:
-   - If you want real parcel boundaries, digitize visible plot boundaries in QGIS into a separate layer tagged `source=manual_visual_reference`, `verification_status=unverified`.
-   - Save as GeoJSON and place into `working/` or use the web app's **Import GeoJSON** button.
-   - If a boundary is not clearly visible in the orthomosaic, leave it unmapped. Never fabricate boundaries.
-3. **Git History Security (If Remote is Public)**:
-   - Untracking files prevents future commits, but existing git commits still contain the historical data files.
-   - If the repository was pushed to a public GitHub repo, run `git-filter-repo` locally to purge large files/data from Git commit history before pushing.
+Plain-English verdict: `working model demo`.
+
+Reason: the project has a real WHU model checkpoint, a successful local GPU run over the Lalpur AOI, and georeferenced prediction output evaluated against a user-confirmed local reference set. It is not an official or legal cadastral accuracy benchmark, and DeepLab has not run because its checkpoint and executable loader are absent.
+
+### What you personally need to do next
+1. Obtain the real RGB Footprint Extract SpaceNet checkpoint and its verified inference loader, then run it into a separate `data/local_model_run/runs/deeplab/<run_id>/` directory.
+2. Compare that genuine output to the preserved WHU baseline with the same evaluator.
+3. Keep the local-reference and non-legal-benchmark caveat in any result summary.
+4. No remote repository changes were made.
+
+---
+
+## Model Run Notes
+- Model: WHU Building Detection — EfficientNet-B4 + U-Net++
+- Revision: `09df9efd323bbd3d56b98b4857129eb9b5baa2d3`
+- Weight SHA-256: `922af7c96c0dc44256ab8b4d1a071f2151e0a921c997af80b55bb766bcc30dc6`
+- Local output directory: `data/local_model_run/`
+- Tile count: `72`
+- Failed tiles: `0`
+- Device: `cuda`
+- Elapsed time: `5.25 s`
+- Alignment disposition: `confirmed by user in QGIS; local reference set, not an official/legal accuracy benchmark`
+
+## 2026-09-30 Local Provider Path Audit
+
+- Local branch/commit: `main` at `9c8b44c` (`v3`); the working tree is dirty and contains local, unpushed provider/UI changes.
+- Root cause of identical WHU/DeepLab map output: the frontend DeepLab option submitted `mode=live`, so the API instantiated WHU. The frontend now sends explicit `mode=deeplab`.
+- DeepLab asset status: no `.pth`, `.pt`, `.ckpt`, `.bin`, or `.safetensors` checkpoint was found in the workspace. The available `data/local_model_run/lalpur_rgb_0.30m.tif` is input imagery, not weights.
+- DeepLab safety change: placeholder/LFS pointer files are rejected, and the adapter raises an explicit error rather than generating constant-probability polygons or returning WHU/mock output.
+- Fresh WHU output change: default live runs now write below `data/local_model_run/runs/whu/<run_id>/`; the canonical saved baseline is not overwritten.
+- Canonical WHU artifacts: GeoJSON SHA-256 `604F19D8B97B9CC957341F08D94EFC77C3B637CD540A0AD35D308485DD4F3FFD`; probability raster SHA-256 `34D49D402CEA624472856A9777107655F545D01F1B101457DAB2E90BA4FBFDDE`; input RGB raster SHA-256 `B55D274FE453FB461DC4E4A24697B5B1A78960C6D4E155C6862BB4FEFB1DF7B0`.
+- Canonical WHU run ID: `run-whu-baseline-045`; valid feature count: 67; probability threshold: 0.45.
+- Latest focused validation: `6 passed, 55 deselected` for DeepLab safety, source-selection, discrepancy, and WHU baseline checks.
+

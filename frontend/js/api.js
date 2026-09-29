@@ -141,6 +141,24 @@ export const ApiClient = {
     return res.json();
   },
 
+  async getPredictionSource() {
+    const res = await fetch(`${API_BASE}/models/prediction-source`);
+    if (!res.ok) throw new Error('Failed to fetch active prediction source');
+    return res.json();
+  },
+
+  async selectPrecomputedPrediction() {
+    const res = await fetch(`${API_BASE}/models/select-precomputed`, { method: 'POST' });
+    if (!res.ok) throw new Error('Failed to select saved WHU prediction');
+    return res.json();
+  },
+
+  async clearPredictionSource() {
+    const res = await fetch(`${API_BASE}/models/prediction-source`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to clear active prediction source');
+    return res.json();
+  },
+
   async getParcelRag() {
     const res = await fetch(`${API_BASE}/parcels/rag`);
     if (!res.ok) throw new Error('Failed to fetch parcel RAG status');

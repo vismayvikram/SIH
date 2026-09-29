@@ -196,6 +196,11 @@ def run_whu_live_inference(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     weight_path, weight_sha256, weight_size = get_whu_model_checkpoint()
 
+    run_id = f"run-whu-{int(time.time() * 1000)}"
+    if out_dir == "data/local_model_run":
+        out_dir = os.path.join(out_dir, "runs", "whu", run_id)
+    os.makedirs(out_dir, exist_ok=True)
+
     # Load model
     model = smp.UnetPlusPlus(encoder_name="efficientnet-b4", encoder_weights=None, in_channels=3, classes=2)
     model.load_state_dict(torch.load(weight_path, map_location=device, weights_only=True))
@@ -229,7 +234,6 @@ def run_whu_live_inference(
         x_steps.append(width - tile_size)
 
     total_tiles = len(y_steps) * len(x_steps)
-    run_id = f"run-whu-{int(time.time())}"
     job_manager.start_job(run_id, total_tiles, str(device))
 
     tiles_done = 0
@@ -348,8 +352,10 @@ def run_whu_live_inference(
             "min_area_cutoff_sqm": min_area_cutoff_sqm,
             "raw_polygon_count": raw_polygon_count,
             "filtered_polygon_count": len(features),
+            "valid_feature_count": len(features),
+            "output_path": out_geojson_path,
             "elapsed_seconds": round(time.time() - start_time, 2),
-            "alignment_status": "provisional—reference alignment not user-confirmed"
+            "alignment_status": "confirmed by user in QGIS; local reference set, not an official/legal accuracy benchmark"
         },
         "features": features
     }
@@ -375,7 +381,7 @@ def run_whu_live_inference(
 - **Raw Polygon Detections**: {raw_polygon_count}
 - **Filtered Polygon Features**: {len(features)}
 - **Output GeoJSON**: `{out_geojson_path}`
-- **Alignment Disposition**: `provisional—reference alignment not user-confirmed`
+- **Alignment Disposition**: `confirmed by user in QGIS; local reference set, not an official/legal accuracy benchmark`
 """
     with open(os.path.join(out_dir, "MODEL_RUN.md"), "w") as f:
         f.write(model_run_md)

@@ -115,17 +115,17 @@ export class MapController {
     const status = feature.properties?.review_status || 'unverified';
     const isSelected = feature.id === this.selectedFeatureId;
 
-    let color = '#38bdf8'; // unverified cyan
+    let color = '#b48954';
     let fillOpacity = 0.35;
 
     if (status === 'approved') {
-      color = '#10b981'; // emerald
+      color = '#7c7b5d';
       fillOpacity = 0.45;
     } else if (status === 'rejected') {
-      color = '#f43f5e'; // rose
+      color = '#9a6b55';
       fillOpacity = 0.45;
     } else if (status === 'under_review') {
-      color = '#f59e0b'; // amber
+      color = '#b9895b';
       fillOpacity = 0.45;
     }
 
@@ -133,7 +133,7 @@ export class MapController {
       return {
         color: '#ffffff',
         weight: 3,
-        fillColor: '#38bdf8',
+        fillColor: '#b48954',
         fillOpacity: 0.65,
         dashArray: null
       };
@@ -158,7 +158,7 @@ export class MapController {
 
   getOsmRoadStyle() {
     return {
-      color: '#06b6d4',
+      color: '#7c7b5d',
       weight: 3,
       dashArray: '6, 6',
       opacity: 0.85
@@ -169,13 +169,13 @@ export class MapController {
     const fType = feature.properties?.feature_type;
     const isSelected = feature.id === this.selectedFeatureId;
 
-    let color = '#c084fc'; // purple
+    let color = '#b9895b';
     let dash = '4, 4';
     if (fType === 'synthetic_parcel') {
-      color = '#e879f9'; // magenta
+      color = '#9a6b55';
       dash = '8, 4';
     } else if (fType === 'synthetic_road_corridor') {
-      color = '#fb923c';
+      color = '#d7c8b3';
     }
 
     return {
@@ -268,7 +268,7 @@ export class MapController {
       const marker = L.circleMarker([coord[1], coord[0]], {
         radius: 6,
         color: '#ffffff',
-        fillColor: '#0284c7',
+        fillColor: '#854628',
         fillOpacity: 1,
         weight: 2
       }).addTo(this.editHandlesGroup);

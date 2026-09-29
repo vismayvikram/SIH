@@ -42,10 +42,37 @@ export class ModelModalController {
     if (btnRunInference) {
       btnRunInference.onclick = () => this.executeInference();
     }
+
+    const btnSaved = document.getElementById('btn-select-saved-whu');
+    if (btnSaved) btnSaved.onclick = () => this.selectSavedPrediction();
+    const btnClear = document.getElementById('btn-clear-prediction-source');
+    if (btnClear) btnClear.onclick = () => this.clearPredictionSource();
   }
 
   openModelModal() {
     if (this.modelModal) this.modelModal.classList.add('active');
+  }
+
+  async selectSavedPrediction() {
+    try {
+      const result = await ApiClient.selectPrecomputedPrediction();
+      this.onInferenceSuccess(result);
+      const statusBox = document.getElementById('model-inference-status');
+      if (statusBox) statusBox.innerHTML = `<div style="color: var(--accent-emerald);">Loaded ${result.detected_count} features from ${result.metadata.source_label} (${result.metadata.run_id}).</div>`;
+    } catch (err) {
+      const statusBox = document.getElementById('model-inference-status');
+      if (statusBox) statusBox.innerHTML = `<div style="color: var(--accent-rose);">${err.message}</div>`;
+    }
+  }
+
+  async clearPredictionSource() {
+    try {
+      await ApiClient.clearPredictionSource();
+      this.onInferenceSuccess({ detected_count: 0, metadata: { source_label: 'No active prediction set' } });
+    } catch (err) {
+      const statusBox = document.getElementById('model-inference-status');
+      if (statusBox) statusBox.innerHTML = `<div style="color: var(--accent-rose);">${err.message}</div>`;
+    }
   }
 
   async openDiscrepancyModal(iouThreshold = 0.35) {
@@ -74,10 +101,10 @@ export class ModelModalController {
       contentBox.innerHTML = `
         <div style="background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 6px; padding: 10px; font-size: 11.5px; color: #fbbf24; margin-bottom: 10px;">
           ⚠️ <strong>Visual QA Alignment Status:</strong> <code>${data.alignment_status}</code><br>
-          <span style="font-size: 10.5px; color: var(--text-muted);">Metrics represent spatial agreement with unverified sample annotations, not validated ground-truth accuracy.</span>
+          <span style="font-size: 10.5px; color: var(--text-muted);">Metrics represent spatial agreement with the user-aligned local reference set, not an official or legal accuracy benchmark.</span>
         </div>
 
-        <div style="background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 6px; padding: 10px; font-size: 11.5px; color: #38bdf8; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+        <div style="background: rgba(180, 137, 84, 0.1); border: 1px solid rgba(133, 70, 40, 0.35); border-radius: 6px; padding: 10px; font-size: 11.5px; color: #854628; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
           <div>⚖️ <strong>Spatial Discrepancy Comparator:</strong> ${data.comparator_nature}</div>
           <div style="display: flex; align-items: center; gap: 6px;">
             <label style="font-size: 11px;">IoU Threshold:</label>
@@ -120,6 +147,11 @@ export class ModelModalController {
               <span style="color: var(--accent-emerald);">IoU: ${(p.iou * 100).toFixed(1)}%</span>
             </div>
           `).join('') : '<div style="color: var(--text-faint); padding: 8px;">No matched pairs at current IoU threshold.</div>'}
+        </div>
+
+        <div style="margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 10.5px; color: var(--text-faint);">
+          <div><strong>Model-only IDs:</strong><br>${(data.model_only_features || []).join(', ') || 'None'}</div>
+          <div><strong>Reference-only IDs:</strong><br>${(data.reference_only_features || []).join(', ') || 'None'}</div>
         </div>
 
         <div style="margin-top: 10px; font-size: 10.5px; color: var(--text-faint);">
@@ -182,15 +214,17 @@ export class ModelModalController {
   }
 
   async executeInference() {
-    const modeSelect = document.getElementById('model-mode-select');
     const modelSelect = document.getElementById('model-select');
     const confSlider = document.getElementById('model-conf-slider');
     const simulateFailureCheck = document.getElementById('model-simulate-failure');
     const statusBox = document.getElementById('model-inference-status');
     const btnRun = document.getElementById('btn-run-inference');
 
-    const mode = modeSelect ? modeSelect.value : 'live';
-    const modelName = modelSelect ? modelSelect.value : 'giswqs/whu-building-unetplusplus-efficientnet-b4';
+    const providerId = modelSelect ? modelSelect.value : 'whu';
+    const mode = providerId === 'deeplab' ? 'deeplab' : 'live';
+    const modelName = providerId === 'deeplab'
+      ? 'aatifjiwani/rgb-footprint-extract'
+      : 'giswqs/whu-building-unetplusplus-efficientnet-b4';
     const confThreshold = confSlider ? parseFloat(confSlider.value) : 0.5;
     const simulateFailure = simulateFailureCheck ? simulateFailureCheck.checked : false;
 

@@ -70,6 +70,9 @@ class Application {
         ApiClient.getLayer('synthetic')
       ]);
 
+      const predictionSource = await ApiClient.getPredictionSource();
+      this.updatePredictionSourceBadge(predictionSource);
+
       this.map.loadLayerData('buildings', buildings);
       this.map.loadLayerData('roads', roads);
       this.map.loadLayerData('osm_roads', osmRoads);
@@ -137,7 +140,14 @@ class Application {
     this.map.loadLayerData('ai_predictions', aiLayer);
     const warningsData = await ApiClient.getWarnings();
     this.warningCenter.setWarnings(warningsData.warnings);
+    this.updatePredictionSourceBadge(result.metadata || { source_label: 'No active prediction set', selected: result.detected_count > 0 });
     this.showToast(`Added ${result.detected_count} AI footprints!`);
+  }
+
+  updatePredictionSourceBadge(source) {
+    const badge = document.getElementById('prediction-source-badge');
+    if (!badge) return;
+    badge.textContent = source.selected === false ? 'No active prediction set' : `${source.source_label} · ${source.prediction_count} features`;
   }
 
   bindLayerToggles() {
