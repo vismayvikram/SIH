@@ -10,6 +10,72 @@ export const ApiClient = {
     return res.json();
   },
 
+  async getProjects() {
+    const res = await fetch(`${API_BASE}/projects`);
+    if (!res.ok) throw new Error('Failed to load project registry');
+    return res.json();
+  },
+
+  async getProject(projectId) {
+    const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}`);
+    if (!res.ok) throw new Error(`Failed to load project: ${projectId}`);
+    return res.json();
+  },
+
+  async getBuildingModelProviders() {
+    const res = await fetch(`${API_BASE}/models/providers`);
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ detail: 'Failed to load building-model providers.' }));
+      throw new Error(error.detail || 'Failed to load building-model providers.');
+    }
+    return res.json();
+  },
+
+  async runProjectBuildingModel(projectId, options) {
+    const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/process/buildings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(options),
+    });
+    const result = await res.json().catch(() => ({ detail: 'Project model request returned invalid JSON.' }));
+    if (!res.ok) throw new Error(result.detail || `Project model request failed (${res.status}).`);
+    return { ...result, http_status: res.status };
+  },
+
+  async getProjectJob(jobId) {
+    const res = await fetch(`${API_BASE}/jobs/${encodeURIComponent(jobId)}`);
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ detail: `Failed to read model job ${jobId}.` }));
+      throw new Error(error.detail || `Failed to read model job ${jobId}.`);
+    }
+    return res.json();
+  },
+
+  async getProjectModelRuns(projectId, signal) {
+    const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/model-runs`, { signal });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ detail: 'Failed to load saved model runs.' }));
+      throw new Error(error.detail || 'Failed to load saved model runs.');
+    }
+    return res.json();
+  },
+
+  async uploadProjectRaster(file, name, locality) {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('name', name);
+    form.append('locality', locality);
+    const res = await fetch(`${API_BASE}/projects`, {
+      method: 'POST',
+      body: form
+    });
+    if (!res.ok) {
+      const error = await res.json();
+      throw new Error(error.detail || 'Project upload failed');
+    }
+    return res.json();
+  },
+
   async getHealth() {
     const res = await fetch(`${API_BASE}/health`);
     if (!res.ok) throw new Error('Failed to check API health');
@@ -18,13 +84,81 @@ export const ApiClient = {
 
   async getLayer(layerName) {
     const res = await fetch(`${API_BASE}/layers/${layerName}`);
-    if (!res.ok) throw new Error(`Failed to load layer: ${layerName}`);
+    if (!res.ok) {
+      let detail = `Failed to load layer: ${layerName}`;
+      try {
+        const error = await res.json();
+        detail = error.detail || detail;
+      } catch (_) {
+        // Keep the layer-specific error when the response is not JSON.
+      }
+      throw new Error(detail);
+    }
+    return res.json();
+  },
+
+  async getProjectLayers(projectId) {
+    const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/layers`);
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ detail: `Failed to load project layers for ${projectId}` }));
+      throw new Error(error.detail || `Failed to load project layers for ${projectId}`);
+    }
+    return res.json();
+  },
+
+  async getProjectManifest(projectId) {
+    const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/layers/manifest`);
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ detail: `Failed to load project manifest for ${projectId}` }));
+      throw new Error(error.detail || `Failed to load project manifest for ${projectId}`);
+    }
+    return res.json();
+  },
+
+  async getProjectWarnings(projectId) {
+    const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/warnings`);
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ detail: `Failed to load warnings for ${projectId}` }));
+      throw new Error(error.detail || `Failed to load warnings for ${projectId}`);
+    }
     return res.json();
   },
 
   async getWarnings() {
     const res = await fetch(`${API_BASE}/warnings`);
     if (!res.ok) throw new Error('Failed to fetch topology warnings');
+    return res.json();
+  },
+
+  async narrateWarnings(warningIds) {
+    const res = await fetch(`${API_BASE}/warnings/narrate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ warning_ids: warningIds })
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'Warning phrasing request failed');
+    }
+    return res.json();
+  },
+
+  async getGreeneryResults() {
+    const res = await fetch(`${API_BASE}/greenery/results`);
+    if (!res.ok) throw new Error('Failed to load saved greenery candidates');
+    return res.json();
+  },
+
+  async detectGreenery(options = {}) {
+    const res = await fetch(`${API_BASE}/greenery/detect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(options)
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'RGB greenery detection failed');
+    }
     return res.json();
   },
 
@@ -40,6 +174,15 @@ export const ApiClient = {
     return res.json();
   },
 
+  async getProjectFeatureDetails(projectId, featureId) {
+    const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/features/${encodeURIComponent(featureId)}`);
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ detail: `Failed to fetch project feature ${featureId}.` }));
+      throw new Error(error.detail || `Failed to fetch project feature ${featureId}.`);
+    }
+    return res.json();
+  },
+
   async updateFeatureStatus(featureId, reviewStatus, notes, reviewerLabel = 'demo-reviewer') {
     const res = await fetch(`${API_BASE}/features/${encodeURIComponent(featureId)}`, {
       method: 'PUT',
@@ -47,6 +190,19 @@ export const ApiClient = {
       body: JSON.stringify({ review_status: reviewStatus, notes, reviewer_label: reviewerLabel })
     });
     if (!res.ok) throw new Error('Failed to update feature status');
+    return res.json();
+  },
+
+  async updateProjectFeatureStatus(projectId, featureId, reviewStatus, notes, reviewerLabel = 'demo-reviewer') {
+    const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/features/${encodeURIComponent(featureId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ review_status: reviewStatus, notes, reviewer_label: reviewerLabel }),
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ detail: 'Failed to update project feature status.' }));
+      throw new Error(error.detail || 'Failed to update project feature status.');
+    }
     return res.json();
   },
 
@@ -60,11 +216,33 @@ export const ApiClient = {
     return res.json();
   },
 
+  async saveProjectGeometryEdit(projectId, featureId, newGeometry, editReason, reviewerLabel = 'demo-reviewer') {
+    const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/features/${encodeURIComponent(featureId)}/edit-geometry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ geometry: newGeometry, edit_reason: editReason, reviewer_label: reviewerLabel }),
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ detail: 'Failed to save project feature geometry.' }));
+      throw new Error(error.detail || 'Failed to save project feature geometry.');
+    }
+    return res.json();
+  },
+
   async revertGeometry(featureId) {
     const res = await fetch(`${API_BASE}/features/${encodeURIComponent(featureId)}/revert`, {
       method: 'POST'
     });
     if (!res.ok) throw new Error('Failed to revert feature geometry');
+    return res.json();
+  },
+
+  async revertProjectGeometry(projectId, featureId) {
+    const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/features/${encodeURIComponent(featureId)}/revert`, { method: 'POST' });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ detail: 'Failed to revert project feature geometry.' }));
+      throw new Error(error.detail || 'Failed to revert project feature geometry.');
+    }
     return res.json();
   },
 
@@ -78,7 +256,7 @@ export const ApiClient = {
     return res.json();
   },
 
-  async runModelInference(mode = 'live', modelName = 'giswqs/whu-building-unetplusplus-efficientnet-b4', confidenceThreshold = 0.5, simulateFailure = false) {
+  async runModelInference(mode = 'live', modelName = 'giswqs/whu-building-unetplusplus-efficientnet-b4', confidenceThreshold = 0.5, simulateFailure = false, morphologyOpeningPx = 0, morphologyClosingPx = 0) {
     const res = await fetch(`${API_BASE}/models/predict`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -87,6 +265,8 @@ export const ApiClient = {
         model_name: modelName,
         model_version: '09df9efd323bbd3d56b98b4857129eb9b5baa2d3',
         confidence_threshold: confidenceThreshold,
+        morphology_opening_px: morphologyOpeningPx,
+        morphology_closing_px: morphologyClosingPx,
         simulate_failure: simulateFailure
       })
     });
@@ -135,26 +315,32 @@ export const ApiClient = {
     return res.json();
   },
 
-  async getDiscrepancies(iouThreshold = 0.35) {
-    const res = await fetch(`${API_BASE}/models/discrepancy?iou_threshold=${iouThreshold}`);
+  async getDiscrepancies(iouThreshold = 0.35, projectId = null) {
+    const url = new URL(`${API_BASE}/models/discrepancy`);
+    url.searchParams.set('iou_threshold', String(iouThreshold));
+    if (projectId) url.searchParams.set('project_id', projectId);
+    const res = await fetch(url);
     if (!res.ok) throw new Error('Failed to fetch model vs reference discrepancies');
     return res.json();
   },
 
-  async getPredictionSource() {
-    const res = await fetch(`${API_BASE}/models/prediction-source`);
+  async getPredictionSource(projectId = null) {
+    const url = projectId ? `${API_BASE}/projects/${encodeURIComponent(projectId)}/models/prediction-source` : `${API_BASE}/models/prediction-source`;
+    const res = await fetch(url);
     if (!res.ok) throw new Error('Failed to fetch active prediction source');
     return res.json();
   },
 
-  async selectPrecomputedPrediction() {
-    const res = await fetch(`${API_BASE}/models/select-precomputed`, { method: 'POST' });
+  async selectPrecomputedPrediction(projectId = null) {
+    const url = projectId ? `${API_BASE}/projects/${encodeURIComponent(projectId)}/models/select-precomputed` : `${API_BASE}/models/select-precomputed`;
+    const res = await fetch(url, { method: 'POST' });
     if (!res.ok) throw new Error('Failed to select saved WHU prediction');
     return res.json();
   },
 
-  async clearPredictionSource() {
-    const res = await fetch(`${API_BASE}/models/prediction-source`, { method: 'DELETE' });
+  async clearPredictionSource(projectId = null) {
+    const url = projectId ? `${API_BASE}/projects/${encodeURIComponent(projectId)}/models/prediction-source` : `${API_BASE}/models/prediction-source`;
+    const res = await fetch(url, { method: 'DELETE' });
     if (!res.ok) throw new Error('Failed to clear active prediction source');
     return res.json();
   },

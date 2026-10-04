@@ -1,0 +1,460 @@
+/*
+ * LandParcel visual theme for the existing SIH26012 application.
+ * This file intentionally changes presentation only: no map geometry, layer
+ * colors, control dimensions, map sizing, API behavior, or model behavior.
+ */
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap&v=sih-20261005-02');
+
+:root {
+  /* LandParcel light palette */
+  --bg-primary: #f8fafc;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f1f5f9;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f8fafc;
+  --border-subtle: #e2e8f0;
+  --border-active: #a7f3d0;
+  --border-focus: #00b074;
+
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --text-faint: #94a3b8;
+
+  /* Emerald is the primary UI accent; warning/status colors remain semantic. */
+  --accent-cyan: #00b074;
+  --accent-blue: #00b074;
+  --accent-emerald: #00b074;
+  --accent-amber: #d97706;
+  --accent-rose: #e11d48;
+  --accent-purple: #8b5cf6;
+
+  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.05);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 16px 40px rgba(15, 23, 42, 0.16);
+  --shadow-glow-cyan: 0 0 0 3px rgba(0, 176, 116, 0.12);
+
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+}
+
+html { color-scheme: light; }
+body {
+  background: var(--bg-primary);
+  color: var(--text-main);
+  font-family: var(--font-sans);
+}
+button, input, select, textarea { font-family: var(--font-sans); }
+input[type="range"], input[type="checkbox"], input[type="radio"] { accent-color: #00b074; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* Shared brand and navigation */
+.brand-logo {
+  background: #0f172a;
+  color: #ffffff;
+  box-shadow: none;
+  border-radius: 10px;
+}
+.brand-info h1, .dashboard-brand-title { color: #0f172a; }
+.brand-subtitle, .dashboard-brand-subtitle { color: #64748b; }
+header.app-header {
+  background: #ffffff;
+  color: #0f172a;
+  border-bottom-color: #e2e8f0;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+.locality-tag {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+.locality-tag strong { color: #0f172a; }
+.locality-lgd { color: #00875a; }
+.dashboard-back-btn { color: #334155; }
+
+.btn-primary,
+.header-actions > .btn-primary {
+  background: #00b074;
+  border-color: #00b074;
+  color: #ffffff;
+  box-shadow: none;
+}
+.btn-primary:hover,
+.header-actions > .btn-primary:hover {
+  background: #009663;
+  border-color: #009663;
+  color: #ffffff;
+  box-shadow: 0 2px 6px rgba(0, 150, 99, 0.18);
+}
+.btn-secondary,
+.header-actions > .btn-secondary,
+.actions-menu > summary.btn {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  color: #475569;
+}
+.btn-secondary:hover,
+.header-actions > .btn-secondary:hover,
+.actions-menu > summary.btn:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #0f172a;
+}
+.btn-success {
+  background: #e6f7f0;
+  border-color: #a7f3d0;
+  color: #047857;
+}
+.btn-success:hover { background: #d1fae5; }
+.btn-danger {
+  background: #fff1f2;
+  border-color: #fecdd3;
+  color: #be123c;
+}
+.btn-danger:hover { background: #ffe4e6; }
+.btn-warning {
+  background: #fffbeb;
+  border-color: #fde68a;
+  color: #b45309;
+}
+.btn-warning:hover { background: #fef3c7; }
+
+.actions-menu-list {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
+}
+.actions-menu-list .menu-item { color: #334155; }
+.actions-menu-list .menu-item:hover { background: #f8fafc; }
+.menu-divider { background: #e2e8f0; }
+.provenance-pill {
+  color: #92400e;
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+.provenance-pill:hover { background: #fef3c7; }
+
+/* Existing viewer shell: retain dimensions and positioning; only restyle chrome. */
+aside.left-sidebar,
+aside.right-sidebar {
+  background: #ffffff;
+  color: #0f172a;
+  border-color: #e2e8f0;
+}
+.sidebar-header { border-bottom: 1px solid #e2e8f0; }
+.sidebar-title { color: #0f172a; }
+.sidebar-subtitle { color: #64748b; }
+.sidebar-scrollable { scrollbar-color: #cbd5e1 #f8fafc; }
+.section-title { color: #64748b; }
+.section-tag-blue { color: #00875a; }
+.section-tag-purple { color: #64748b; }
+.layer-card { border-bottom-color: #e2e8f0; }
+.layer-card:hover { background: #f8fafc; }
+.layer-name { color: #0f172a; }
+.layer-meta { color: #64748b; }
+.layer-meta-demo { color: #00875a; }
+.toggle-slider { background-color: #cbd5e1; }
+input:checked + .toggle-slider { background-color: #00b074; }
+
+.basemap-btn {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  color: #475569;
+}
+.basemap-btn:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #0f172a;
+}
+.basemap-tag { color: #64748b; }
+.basemap-btn.active {
+  background: #e6f7f0;
+  border-color: #a7f3d0;
+  color: #047857;
+  box-shadow: none;
+}
+.raster-status-card {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  color: #64748b;
+}
+section.map-container { background: #f1f5f9; }
+.map-info-chip {
+  background: rgba(255, 255, 255, 0.96);
+  border-color: #e2e8f0;
+  color: #475569;
+  box-shadow: var(--shadow-sm);
+}
+footer.app-statusbar {
+  background: #ffffff;
+  border-top-color: #e2e8f0;
+  color: #64748b;
+}
+.app-statusbar strong,
+.statusbar-right strong { color: #334155; }
+.status-online { color: #00875a; }
+
+.map-floating-bar {
+  background: rgba(255, 255, 255, 0.97);
+  border-color: #e2e8f0;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
+}
+.map-control-btn { color: #475569; }
+.map-control-btn:hover { background: #f1f5f9; color: #0f172a; }
+.map-control-primary { background: #e6f7f0; color: #047857; }
+.map-control-btn.active {
+  background: #00b074;
+  border-color: #009663;
+  color: #ffffff;
+  box-shadow: 0 2px 6px rgba(0, 150, 99, 0.18);
+}
+
+/* Feature inspector cards and forms */
+.inspector-empty { color: #64748b; }
+.inspector-empty p:first-of-type strong { color: #0f172a; }
+.inspector-empty-icon { border-color: #cbd5e1; }
+.inspector-empty-icon::before { color: #64748b; }
+.feature-header-card,
+.score-box,
+.attr-cell,
+.geometry-edit-card {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  box-shadow: var(--shadow-sm);
+}
+.feature-id { color: #00875a; }
+.status-unverified { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+.status-under_review { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+.status-approved { background: #e6f7f0; color: #047857; border: 1px solid #a7f3d0; }
+.status-rejected { background: #fff1f2; color: #be123c; border: 1px solid #fecdd3; }
+.score-box { background: linear-gradient(135deg, #ffffff, #f8fafc); }
+.score-bar-bg { background: #e2e8f0; }
+.score-rule-item { border-bottom-color: #e2e8f0; }
+.priority-high { background: #fff1f2; color: #be123c; border-color: #fecdd3; }
+.priority-medium { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+.priority-low { background: #e6f7f0; color: #047857; border-color: #a7f3d0; }
+.attr-cell { color: #334155; }
+.attr-label { color: #64748b; }
+.attr-val { color: #0f172a; }
+.geometry-edit-card { border-style: dashed; }
+.form-label { color: #475569; }
+.form-input, .form-textarea {
+  background: #ffffff;
+  border-color: #cbd5e1;
+  color: #0f172a;
+}
+.form-input:focus, .form-textarea:focus {
+  border-color: #00b074;
+  box-shadow: 0 0 0 3px rgba(0, 176, 116, 0.12);
+}
+.form-input::placeholder, .form-textarea::placeholder { color: #94a3b8; }
+
+/* Warning drawer and cards */
+section.bottom-warning-tray {
+  background: rgba(255, 255, 255, 0.98);
+  border-top-color: #e2e8f0;
+  box-shadow: 0 -4px 14px rgba(15, 23, 42, 0.08);
+}
+.warning-tray-header { background: #f8fafc; }
+.warning-tray-title { color: #0f172a; }
+.warning-card {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  box-shadow: var(--shadow-sm);
+}
+.warning-card:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+.warning-title-line { color: #0f172a; }
+.warning-desc { color: #64748b; }
+
+/* Dialogs and toasts */
+.modal-overlay { background: rgba(15, 23, 42, 0.42); }
+.modal-window {
+  background: #ffffff;
+  color: #0f172a;
+  border-color: #e2e8f0;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.2);
+}
+.modal-header { border-bottom-color: #e2e8f0; }
+.modal-header h2 { color: #0f172a; }
+.modal-body { color: #475569; }
+.modal-body strong { color: #0f172a; }
+.modal-footer { background: #f8fafc; border-top-color: #e2e8f0; }
+.modal-close-btn { color: #64748b; }
+.toast {
+  background: rgba(255, 255, 255, 0.98);
+  border-color: #e2e8f0;
+  border-left-color: #00b074;
+  color: #0f172a;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
+}
+#modal-provenance .modal-body > div {
+  background: #fffbeb !important;
+  border-color: #fde68a !important;
+  color: #92400e !important;
+}
+#modal-provenance .modal-body > div strong { color: #78350f; }
+
+/* Leaflet chrome only. Raster tiles and feature overlay colors are untouched. */
+.leaflet-container { background: #f1f5f9; }
+.leaflet-container .leaflet-bar {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
+}
+.leaflet-container .leaflet-bar a {
+  background: #ffffff;
+  color: #334155;
+  border-bottom-color: #e2e8f0;
+}
+.leaflet-container .leaflet-bar a:hover,
+.leaflet-container .leaflet-bar a:focus { background: #f1f5f9; }
+.leaflet-container .leaflet-bar a.leaflet-disabled { background: #f8fafc; color: #cbd5e1; }
+.leaflet-container .leaflet-control-attribution {
+  background: rgba(255, 255, 255, 0.92);
+  color: #64748b;
+}
+.leaflet-container .leaflet-control-attribution a { color: #00875a; }
+.leaflet-control-scale-line {
+  background: rgba(255, 255, 255, 0.92);
+  color: #475569;
+  border-color: #64748b;
+}
+.leaflet-tooltip.custom-map-tooltip {
+  background: rgba(255, 255, 255, 0.98);
+  border-color: #e2e8f0;
+  color: #0f172a;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
+}
+
+/* Dashboard: same light canvas, emerald accents, and quiet card surfaces as LandParcel. */
+.dashboard-shell { background: #f8fafc; }
+.dashboard-sidebar {
+  background: #ffffff;
+  border-right-color: #e2e8f0;
+}
+.dashboard-brand-title { font-size: 16px; letter-spacing: -0.2px; }
+.dashboard-brand-subtitle { font-size: 12px; }
+.dashboard-nav-item { color: #64748b; }
+.dashboard-nav-item:hover:not(:disabled) { background: #f8fafc; color: #0f172a; }
+.dashboard-nav-item.active {
+  background: #e6f7f0;
+  border-color: #d1fae5;
+  color: #00875a;
+  font-weight: 600;
+}
+.dashboard-main { background: #f8fafc; }
+.dashboard-kicker, .project-kicker { color: #00875a; }
+.dashboard-hero-copy,
+.dashboard-preview-card,
+.project-card,
+.info-panel {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.05);
+}
+.dashboard-hero-copy h1,
+.dashboard-topbar h2,
+.dashboard-section-heading h2,
+.project-card-head h3,
+.info-panel h3 { color: #0f172a; }
+.dashboard-hero-copy p,
+.future-project p,
+.info-panel ul { color: #64748b; }
+.hero-chip {
+  color: #047857;
+  background: #e6f7f0;
+  border-color: #a7f3d0;
+}
+.preview-map-header { color: #0f172a; }
+.preview-map-surface {
+  background:
+    linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(248, 250, 252, 0.55)),
+    repeating-linear-gradient(90deg, rgba(148, 163, 184, 0.13) 0, rgba(148, 163, 184, 0.13) 1px, transparent 1px, transparent 22px),
+    repeating-linear-gradient(0deg, rgba(148, 163, 184, 0.13) 0, rgba(148, 163, 184, 0.13) 1px, transparent 1px, transparent 22px);
+  border-color: #e2e8f0;
+}
+.preview-map-grid { background: linear-gradient(135deg, rgba(0, 176, 116, 0.12), transparent 48%); }
+.preview-map-grid::after {
+  border-color: rgba(0, 176, 116, 0.7);
+  background: rgba(0, 176, 116, 0.06);
+  box-shadow: inset 0 0 20px rgba(0, 176, 116, 0.05);
+}
+.preview-map-meta { color: #64748b; }
+.project-meta-grid div {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+.project-meta-grid strong { color: #64748b; }
+.project-meta-grid span { color: #0f172a; }
+.dashboard-project-item {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+.dashboard-project-item h3 { color: #0f172a; }
+.dashboard-project-item p { color: #64748b; }
+.future-chip {
+  background: #e6f7f0;
+  border-color: #a7f3d0;
+  color: #047857;
+}
+.future-note {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  color: #64748b;
+}
+.dashboard-strip {
+  background: #ffffff;
+  border-color: #e2e8f0;
+}
+.step-pill {
+  background: #e6f7f0;
+  border-color: #a7f3d0;
+  color: #047857;
+}
+.step-arrow { color: #94a3b8; }
+.info-panel li::before { color: #00b074; }
+
+/* The current create-project dialog stays backed by its existing upload API. */
+.project-dialog {
+  background: #ffffff;
+  color: #0f172a;
+  border-color: #e2e8f0;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.2);
+}
+.project-dialog::backdrop { background: rgba(15, 23, 42, 0.42); }
+.project-dialog-heading h2 { color: #0f172a; }
+.project-dialog .form-label { color: #334155; }
+.project-dialog .form-input {
+  background: #ffffff;
+  border-color: #cbd5e1;
+  color: #0f172a;
+}
+.project-dialog .form-input:focus { border-color: #00b074; }
+.project-dialog input[type="file"]::file-selector-button {
+  margin-right: 12px;
+  padding: 7px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  background: #f8fafc;
+  color: #334155;
+  font: 600 12px var(--font-sans);
+  cursor: pointer;
+}
+.project-dialog input[type="file"]::file-selector-button:hover { background: #e6f7f0; }
+.project-form-hint, .project-upload-status { color: #64748b; }
+.dialog-close {
+  border-color: #e2e8f0;
+  color: #64748b;
+  background: #ffffff;
+}
+.dialog-close:hover { background: #f8fafc; color: #0f172a; }
+
+/* Project feature/data colors (brown, amber, blue, purple, red) are deliberately
+   left intact because they identify different map layers and review states. */

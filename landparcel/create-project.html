@@ -1,0 +1,897 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Landparcel AI - Create New Project</title>
+  
+  <!-- Google Fonts, Lucide Icons & Leaflet Maps -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- KML to GeoJSON parser -->
+  <script src="https://unpkg.com/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js"></script>
+
+  <style>
+    :root {
+      /* Light Theme Colors */
+      --bg-app: #f8fafc;
+      --bg-sidebar: #ffffff;
+      --bg-card: #ffffff;
+      --bg-card-sub: #f8fafc;
+      --border-color: #e2e8f0;
+      
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --text-light: #94a3b8;
+
+      --primary-emerald: #10b981;
+      --primary-light-bg: #e6f4ea;
+      --primary-hover: #059669;
+      
+      --accent-badge: #d1fae5;
+      --accent-badge-text: #065f46;
+
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
+      --border-dash: #cbd5e1;
+    }
+
+    [data-theme="dark"] {
+      --bg-app: #0f172a;
+      --bg-sidebar: #1e293b;
+      --bg-card: #1e293b;
+      --bg-card-sub: #334155;
+      --border-color: #334155;
+      
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-light: #64748b;
+
+      --primary-emerald: #10b981;
+      --primary-light-bg: rgba(16, 185, 129, 0.15);
+      --primary-hover: #34d399;
+      
+      --accent-badge: rgba(16, 185, 129, 0.2);
+      --accent-badge-text: #34d399;
+
+      --border-dash: #475569;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      transition: background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease;
+    }
+
+    body {
+      background-color: var(--bg-app);
+      color: var(--text-main);
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .app-container {
+      display: flex;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Sidebar Styling */
+    .sidebar {
+      width: 260px;
+      background-color: var(--bg-sidebar);
+      border-right: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 24px 16px;
+      flex-shrink: 0;
+      z-index: 10;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 32px;
+      padding: 0 8px;
+    }
+
+    .brand-icon {
+      width: 32px;
+      height: 32px;
+      background: var(--text-main);
+      color: var(--bg-sidebar);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .brand-text h2 {
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      line-height: 1.2;
+    }
+
+    .brand-text span {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .nav-section {
+      margin-bottom: 24px;
+    }
+
+    .nav-title {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--text-light);
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+      padding: 0 12px;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border-radius: 8px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 4px;
+      cursor: pointer;
+    }
+
+    .nav-item:hover {
+      background-color: var(--bg-card-sub);
+      color: var(--text-main);
+    }
+
+    .nav-item.active {
+      background-color: var(--primary-light-bg);
+      color: var(--primary-emerald);
+    }
+
+    .nav-item-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .theme-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background-color: var(--bg-card-sub);
+      padding: 8px 12px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      cursor: pointer;
+    }
+
+    .theme-toggle-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .user-profile {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 8px 0;
+      border-top: 1px solid var(--border-color);
+      margin-bottom: 12px;
+    }
+
+    .user-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background-color: #0f172a;
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .user-details h4 {
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .user-details p {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .node-status {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text-muted);
+      padding: 0 8px;
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background-color: var(--primary-emerald);
+      margin-right: 4px;
+    }
+
+    /* Main Content */
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      background-color: var(--bg-app);
+    }
+
+    .header {
+      height: 64px;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      padding: 0 32px;
+      background-color: var(--bg-sidebar);
+      gap: 16px;
+    }
+
+    .btn-back {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background-color: var(--bg-app);
+      border: 1px solid var(--border-color);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-main);
+      text-decoration: none;
+    }
+
+    .breadcrumb {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .breadcrumb strong {
+      color: var(--text-main);
+    }
+
+    .content-body {
+      padding: 32px;
+      max-width: 1000px;
+    }
+
+    .page-title {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .page-subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 28px;
+    }
+
+    /* Form Container Card */
+    .form-card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 28px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .form-group {
+      margin-bottom: 24px;
+    }
+
+    .form-label {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      display: block;
+    }
+
+    .input-text {
+      width: 100%;
+      padding: 10px 14px;
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      color: var(--text-main);
+      outline: none;
+    }
+
+    .input-text:focus {
+      border-color: var(--primary-emerald);
+    }
+
+    .form-hint {
+      font-size: 11px;
+      color: var(--text-light);
+      margin-top: 6px;
+    }
+
+    .land-data-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .max-size-tag {
+      font-size: 11px;
+      color: var(--text-light);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* Upload Box & Map Container */
+    .upload-zone {
+      border: 2px dashed var(--border-dash);
+      border-radius: 12px;
+      height: 280px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background-color: var(--bg-card);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .upload-icon-wrapper {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background-color: var(--bg-card-sub);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 12px;
+      color: var(--text-muted);
+    }
+
+    .upload-title {
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .upload-sub {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+    }
+
+    .btn-file-upload {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      color: var(--text-main);
+      margin-bottom: 20px;
+    }
+
+    .file-tags {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .cad-pill {
+      background-color: var(--bg-card-sub);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      color: var(--text-muted);
+      border: 1px solid var(--border-color);
+    }
+
+    /* Map Display View */
+    #mapContainer {
+      width: 100%;
+      height: 100%;
+      display: none;
+      z-index: 1;
+    }
+
+    .map-active .upload-center-content {
+      display: none !important;
+    }
+
+    .map-active #mapContainer {
+      display: block !important;
+    }
+
+    .map-controls-overlay {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 999;
+      display: none;
+      gap: 8px;
+    }
+
+    .map-active .map-controls-overlay {
+      display: flex;
+    }
+
+    .btn-map-action {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* Card Actions Footer */
+    .form-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 24px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border-color);
+    }
+
+    .btn-cancel {
+      background: none;
+      border: none;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .footer-right-actions {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .btn-draft {
+      background: none;
+      border: none;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+
+    .btn-continue {
+      background-color: var(--primary-emerald);
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+
+    .btn-continue:hover {
+      background-color: var(--primary-hover);
+    }
+
+    /* Responsive Queries */
+    @media (max-width: 768px) {
+      .app-container {
+        flex-direction: column;
+      }
+
+      .sidebar {
+        width: 100%;
+        height: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--border-color);
+        padding: 16px;
+      }
+
+      .nav-section {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 0;
+        overflow-x: auto;
+      }
+
+      .nav-title {
+        display: none;
+      }
+
+      .content-body {
+        padding: 16px;
+      }
+    }
+
+    /* Icon sizing (matches dashboard) */
+    svg.lucide { width: 16px; height: 16px; flex-shrink: 0; }
+    .brand-icon svg.lucide { width: 18px; height: 18px; }
+    .upload-icon-wrapper svg.lucide { width: 18px; height: 18px; }
+  </style>
+</head>
+<body>
+
+  <div class="app-container">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div>
+        <div class="brand">
+          <div class="brand-icon">
+            <i data-lucide="layers"></i>
+          </div>
+          <div class="brand-text">
+            <h2>LANDPARCEL AI</h2>
+            <span>Smart Land Subdivision</span>
+          </div>
+        </div>
+
+        <div class="nav-section">
+          <div class="nav-title">WORKSPACE</div>
+          <a href="index.html" class="nav-item">
+            <div class="nav-item-left">
+              <i data-lucide="layout-grid"></i>
+              <span>Projects Dashboard</span>
+            </div>
+          </a>
+          <a href="create-project.html" class="nav-item active">
+            <div class="nav-item-left">
+              <i data-lucide="plus-circle"></i>
+              <span>Create Project</span>
+            </div>
+          </a>
+          <a href="edit-project.html" class="nav-item">
+            <div class="nav-item-left">
+              <i data-lucide="edit-3"></i>
+              <span>Edit Project</span>
+            </div>
+          </a>
+        </div>
+
+        <div class="nav-section">
+          <div class="nav-title">SYSTEM</div>
+          <a href="settings.html" class="nav-item">
+            <div class="nav-item-left">
+              <i data-lucide="settings"></i>
+              <span>Settings</span>
+            </div>
+          </a>
+        </div>
+      </div>
+
+      <!-- Theme Controls & Profile -->
+      <div>
+        <div class="theme-toggle" id="themeToggleBtn">
+          <div class="theme-toggle-label">
+            <i data-lucide="moon" id="themeIcon"></i>
+            <span id="themeText">Dark Mode</span>
+          </div>
+        </div>
+
+        <div class="user-profile">
+          <div class="user-info">
+            <div class="avatar">JD</div>
+            <div class="user-details">
+              <h4>John Doe</h4>
+              <p>Principal Surveyor</p>
+            </div>
+          </div>
+          <i data-lucide="more-vertical" style="color: var(--text-light); cursor: pointer;"></i>
+        </div>
+
+        <div class="node-status">
+          <span>AI Compute Node</span>
+          <span><span class="status-dot"></span>Ready</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <header class="header">
+        <a href="index.html" class="btn-back">
+          <i data-lucide="arrow-left"></i>
+          <span>Back to Projects</span>
+        </a>
+        <span class="breadcrumb">Projects / <strong>Create New Project</strong></span>
+      </header>
+
+      <section class="content-body">
+        <h1 class="page-title">Create New Project</h1>
+        <p class="page-subtitle">Configure project metadata and upload spatial boundary vectors to initialize AI lot subdivision.</p>
+
+        <div class="form-card">
+          <!-- Project Name Input -->
+          <div class="form-group">
+            <label class="form-label" for="projectName">Project name</label>
+            <input type="text" id="projectName" class="input-text" value="[ Residential Layout - Site 01 ]">
+            <div class="form-hint">Unique project identifier for CAD layers, legal descriptions, and GIS exports.</div>
+          </div>
+
+          <!-- Spatial File Upload Area -->
+          <div class="form-group">
+            <div class="land-data-header">
+              <label class="form-label" style="margin-bottom:0">Land data</label>
+              <span class="max-size-tag">Max size: 50MB</span>
+            </div>
+
+            <div class="upload-zone" id="uploadZone">
+              <!-- Upload Center Box (Visible standard state) -->
+              <div class="upload-center-content" style="display: flex; flex-direction: column; align-items: center;">
+                <div class="upload-icon-wrapper">
+                  <i data-lucide="upload-cloud"></i>
+                </div>
+                <div class="upload-title">Upload your land boundary</div>
+                <div class="upload-sub">Drag & drop file</div>
+
+                <input type="file" id="fileInput" accept=".json,.geojson,.kml,.shp" style="display: none;">
+                <button type="button" class="btn-file-upload" onclick="document.getElementById('fileInput').click()">
+                  [ UPLOAD FILE ]
+                </button>
+
+                <div class="file-tags">
+                  <span>GeoJSON</span> • <span>KML</span> • <span>SHP</span>
+                  <span class="cad-pill">AutoCAD .DXF compatible</span>
+                </div>
+              </div>
+
+              <!-- Map Container Box (Revealed upon uploading) -->
+              <div id="mapContainer"></div>
+
+              <!-- Map overlay controls -->
+              <div class="map-controls-overlay">
+                <button type="button" class="btn-map-action" onclick="resetFile()">Replace Boundary</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Bottom Actions -->
+          <div class="form-footer">
+            <a href="index.html" class="btn-cancel">Cancel</a>
+            <div class="footer-right-actions">
+              <button type="button" class="btn-draft" onclick="saveProject(true)">Save as Draft</button>
+              <button type="button" class="btn-continue" onclick="saveProject(false)">
+                <span>Continue</span>
+                <i data-lucide="arrow-right"></i>
+              </button>
+            </div>
+          </div>
+
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    lucide.createIcons();
+
+    let map = null;
+    let uploadedGeoData = null;
+
+    // -------------------------------------------------------------
+    // File Upload & Spatial Parser Logic
+    // -------------------------------------------------------------
+    const fileInput = document.getElementById('fileInput');
+    const uploadZone = document.getElementById('uploadZone');
+
+    // Drag and Drop listeners
+    uploadZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      uploadZone.style.borderColor = 'var(--primary-emerald)';
+    });
+
+    uploadZone.addEventListener('dragleave', () => {
+      uploadZone.style.borderColor = 'var(--border-dash)';
+    });
+
+    uploadZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      uploadZone.style.borderColor = 'var(--border-dash)';
+      if (e.dataTransfer.files.length) {
+        handleFileSelect(e.dataTransfer.files[0]);
+      }
+    });
+
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length) {
+        handleFileSelect(e.target.files[0]);
+      }
+    });
+
+    function handleFileSelect(file) {
+      const fileName = file.name.toLowerCase();
+      const reader = new FileReader();
+
+      if (fileName.endsWith('.geojson') || fileName.endsWith('.json')) {
+        reader.onload = (event) => {
+          try {
+            const geojson = JSON.parse(event.target.result);
+            renderMapWithBoundary(geojson);
+          } catch (err) {
+            alert('Invalid GeoJSON file formatting.');
+          }
+        };
+        reader.readAsText(file);
+      } else if (fileName.endsWith('.kml')) {
+        reader.onload = (event) => {
+          try {
+            const dom = new DOMParser().parseFromString(event.target.result, 'text/xml');
+            const geojson = toGeoJSON.kml(dom);
+            renderMapWithBoundary(geojson);
+          } catch (err) {
+            alert('Invalid KML spatial format.');
+          }
+        };
+        reader.readAsText(file);
+      } else {
+        // Fallback demo shape boundary if arbitrary file / .shp is uploaded
+        renderMapWithBoundary(getSamplePolygon());
+      }
+    }
+
+    function renderMapWithBoundary(geojson) {
+      uploadedGeoData = geojson;
+      uploadZone.classList.add('map-active');
+
+      if (!map) {
+        map = L.map('mapContainer').setView([37.7749, -122.4194], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '© OpenStreetMap'
+        }).addTo(map);
+      }
+
+      // Clear existing layers
+      map.eachLayer((layer) => {
+        if (layer instanceof L.GeoJSON) {
+          map.removeLayer(layer);
+        }
+      });
+
+      // Render GeoJSON
+      const layer = L.geoJSON(geojson, {
+        style: {
+          color: '#10b981',
+          weight: 3,
+          fillColor: '#10b981',
+          fillOpacity: 0.25
+        }
+      }).addTo(map);
+
+      // Fit map bounds to boundary vector
+      try {
+        map.fitBounds(layer.getBounds(), { padding: [20, 20] });
+      } catch (e) {
+        // Default View Fallback
+      }
+
+      setTimeout(() => map.invalidateSize(), 200);
+    }
+
+    function resetFile() {
+      uploadZone.classList.remove('map-active');
+      fileInput.value = '';
+      uploadedGeoData = null;
+    }
+
+    // Default sample polygon generator for quick testing
+    function getSamplePolygon() {
+      return {
+        "type": "FeatureCollection",
+        "features": [{
+          "type": "Feature",
+          "properties": {},
+          "geometry": {
+            "type": "Polygon",
+            "coordinates": [[
+              [-122.4194, 37.7749],
+              [-122.4144, 37.7749],
+              [-122.4144, 37.7799],
+              [-122.4194, 37.7799],
+              [-122.4194, 37.7749]
+            ]]
+          }
+        }]
+      };
+    }
+
+    // -------------------------------------------------------------
+    // Storage & Project Creation Handler
+    // -------------------------------------------------------------
+    function saveProject(isDraft) {
+      const rawName = document.getElementById('projectName').value.replace(/^\[\s*|\s*\]$/g, '');
+      const projectName = rawName.trim() || 'Untitled Site Layout';
+
+      const existingProjects = JSON.parse(localStorage.getItem('landparcel_projects') || '[]');
+      
+      const newProject = {
+        title: projectName,
+        acres: (Math.random() * 12 + 4).toFixed(1),
+        plots: Math.floor(Math.random() * 25 + 10),
+        status: isDraft ? 'Draft' : 'Processing',
+        format: 'CAD DXF-R21',
+        created: new Date().toISOString()
+      };
+
+      existingProjects.unshift(newProject);
+      localStorage.setItem('landparcel_projects', JSON.stringify(existingProjects));
+
+      // Redirect back to dashboard
+      window.location.href = 'index.html';
+    }
+
+    // -------------------------------------------------------------
+    // Dark Mode Toggle
+    // -------------------------------------------------------------
+    const themeToggleBtn = document.getElementById('themeToggleBtn');
+    const themeText = document.getElementById('themeText');
+    const htmlElement = document.documentElement;
+
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+      htmlElement.setAttribute('data-theme', 'dark');
+      themeText.innerText = "Light Mode";
+    }
+
+    themeToggleBtn.addEventListener('click', () => {
+      const currentTheme = htmlElement.getAttribute('data-theme');
+      if (currentTheme === 'dark') {
+        htmlElement.removeAttribute('data-theme');
+        themeText.innerText = "Dark Mode";
+      } else {
+        htmlElement.setAttribute('data-theme', 'dark');
+        themeText.innerText = "Light Mode";
+      }
+    });
+  </script>
+</body>
+</html>

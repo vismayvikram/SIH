@@ -74,6 +74,8 @@ tiles/
 *.sbn
 *.sbx
 data/local_model_run/
+data/projects/
+data/external/inria_aerial/
 SIH26012_Comprehensive_Project_Blueprint (1).md
 prompt.md
 Implementation_Plan_*.md

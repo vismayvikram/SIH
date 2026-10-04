@@ -6,7 +6,7 @@ import io
 import math
 import os
 import warnings
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 import rasterio
 from rasterio.windows import from_bounds
 from PIL import Image
@@ -45,8 +45,15 @@ def tile_bounds_3857(z: int, x: int, y: int) -> Tuple[float, float, float, float
     return minx, miny, maxx, maxy
 
 class RasterTileService:
-    def __init__(self, tif_path: str = DEFAULT_GEOTIFF_PATH):
+    def __init__(
+        self,
+        tif_path: str = DEFAULT_GEOTIFF_PATH,
+        rgb_band_mapping: Optional[List[int]] = None,
+        alpha_band: Optional[int] = None,
+    ):
         self.tif_path = tif_path
+        self.rgb_band_mapping = rgb_band_mapping
+        self.alpha_band = alpha_band
         self._src: Optional[rasterio.DatasetReader] = None
         self.is_available = False
         self.metadata: Dict[str, Any] = {}
@@ -99,7 +106,7 @@ class RasterTileService:
             self._src = rasterio.open(self.tif_path)
         return self._src
 
-    def get_tile_png(self, z: int, x: int, y: int) -> bytes:
+    def get_tile_png(self, z: int, x: int, y: int, *, strict: bool = False) -> bytes:
         """
         Renders a 256x256 PNG tile for the given XYZ coordinates.
         Returns a transparent PNG if tile does not intersect raster bounds or if raster is unavailable.
@@ -120,6 +127,30 @@ class RasterTileService:
 
         try:
             window = from_bounds(minx, miny, maxx, maxy, transform=src.transform)
+            if self.rgb_band_mapping:
+                indexes = list(self.rgb_band_mapping)
+                if self.alpha_band:
+                    indexes.append(self.alpha_band)
+                data = src.read(
+                    indexes,
+                    window=window,
+                    out_shape=(len(indexes), 256, 256),
+                    boundless=True,
+                    fill_value=0,
+                    masked=True,
+                )
+                rgb = np.transpose(np.ma.filled(data[:3], 0), (1, 2, 0)).astype(np.uint8)
+                invalid = np.ma.getmaskarray(data[:3]).any(axis=0)
+                if self.alpha_band:
+                    alpha = np.ma.filled(data[3], 0).astype(np.uint8)
+                    alpha[invalid] = 0
+                else:
+                    alpha = np.where(~invalid & np.any(rgb > 0, axis=-1), 255, 0).astype(np.uint8)
+                img = Image.fromarray(np.dstack((rgb, alpha)), mode="RGBA")
+                buf = io.BytesIO()
+                img.save(buf, format="PNG", optimize=True)
+                return buf.getvalue()
+
             # Read 256x256 image window
             data = src.read(window=window, out_shape=(src.count, 256, 256), boundless=True, fill_value=0)
 
@@ -148,6 +179,8 @@ class RasterTileService:
             img.save(buf, format='PNG', optimize=True)
             return buf.getvalue()
         except Exception:
+            if strict:
+                raise
             return get_transparent_png()
 
 # Singleton instance

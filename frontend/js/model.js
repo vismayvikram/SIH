@@ -1,24 +1,38 @@
 /**
  * SIH26012 Platform - AI Building Model & Benchmark Modals Controller
  */
-import { ApiClient } from './api.js';
+import { ApiClient } from './api.js?v=sih-20261005-02';
 
 export class ModelModalController {
   constructor(options = {}) {
     this.onInferenceSuccess = options.onInferenceSuccess || (() => {});
+    this.getProjectContext = options.getProjectContext || (() => ({}));
+    this.onProjectModelComplete = options.onProjectModelComplete || (async () => {});
+    this.onTrace = options.onTrace || (() => {});
+    this.onDrawArea = options.onDrawArea || (() => {});
+    this.onToast = options.onToast || (() => {});
     this.modelModal = document.getElementById('modal-ai-model');
     this.benchmarkModal = document.getElementById('modal-benchmarks');
     this.discrepancyModal = document.getElementById('modal-discrepancy');
+    this.providers = [];
+    this.selectedProvider = null;
+    this.areaMode = 'whole';
+    this.area = null;
+    this.lastSecondsPerTile = {};
+    this.isRunning = false;
+    this.providersLoaded = false;
 
     this.bindButtons();
   }
 
   bindButtons() {
-    // Open inference modal button
-    const btnOpenModel = document.getElementById('btn-open-model-modal');
-    if (btnOpenModel) {
-      btnOpenModel.onclick = () => this.openModelModal();
-    }
+    ['btn-open-model-modal', 'btn-open-model-modal-toolbar', 'btn-model-sidebar-cta'].forEach((id) => {
+      const button = document.getElementById(id);
+      if (button) button.onclick = async () => {
+        this.onTrace('button clicked', id);
+        await this.openModelModal();
+      };
+    });
 
     // Open benchmarks modal button
     const btnOpenBenchmarks = document.getElementById('btn-open-benchmark-modal');
@@ -40,8 +54,24 @@ export class ModelModalController {
     // Run inference button
     const btnRunInference = document.getElementById('btn-run-inference');
     if (btnRunInference) {
-      btnRunInference.onclick = () => this.executeInference();
+      btnRunInference.onclick = async () => { await this.executeInference(); };
     }
+
+    document.getElementById('btn-close-ai-model')?.addEventListener('click', () => this.closeModelModal());
+    document.getElementById('btn-cancel-ai-model')?.addEventListener('click', () => this.closeModelModal());
+    document.getElementById('btn-model-draw-area')?.addEventListener('click', () => this.beginAreaDrawing());
+    document.getElementById('model-provider-cards')?.addEventListener('click', (event) => {
+      const card = event.target.closest('[data-provider-id]');
+      if (card && !card.disabled) this.selectProvider(card.dataset.providerId);
+    });
+    document.getElementById('model-conf-slider')?.addEventListener('input', () => this.updateThresholdLabel());
+    document.querySelectorAll('input[name="model-area-mode"]').forEach((radio) => {
+      radio.addEventListener('change', () => {
+        this.areaMode = radio.value;
+        this.updateAreaEstimate();
+      });
+    });
+    document.getElementById('model-resolution-m')?.addEventListener('input', () => this.updateAreaEstimate());
 
     const btnSaved = document.getElementById('btn-select-saved-whu');
     if (btnSaved) btnSaved.onclick = () => this.selectSavedPrediction();
@@ -50,7 +80,159 @@ export class ModelModalController {
   }
 
   openModelModal() {
-    if (this.modelModal) this.modelModal.classList.add('active');
+    return this.showModelModal();
+  }
+
+  async showModelModal() {
+    if (!this.modelModal) return;
+    if (!this.modelModal.open) this.modelModal.showModal();
+    this.onTrace('modal opened', this.getProjectContext().projectId || 'no active project');
+    if (!this.providersLoaded) await this.loadProviders();
+    else this.updateAreaEstimate();
+  }
+
+  closeModelModal() {
+    if (this.modelModal?.open) this.modelModal.close();
+  }
+
+  async loadProviders() {
+    const cards = document.getElementById('model-provider-cards');
+    const status = document.getElementById('model-inference-status');
+    const runButton = document.getElementById('btn-run-inference');
+    if (cards) cards.textContent = 'Checking local model providers...';
+    if (runButton) runButton.disabled = true;
+    try {
+      const result = await ApiClient.getBuildingModelProviders();
+      this.providers = result.providers || [];
+      this.providersLoaded = true;
+      this.renderProviders();
+      const selected = this.providers.find((provider) => provider.id === this.selectedProvider && provider.enabled);
+      const firstEnabled = this.providers.find((provider) => provider.enabled);
+      if (selected) this.renderProviders();
+      else if (firstEnabled) this.selectProvider(firstEnabled.id);
+      else {
+        this.selectedProvider = null;
+        this.renderProviders();
+        if (status) status.textContent = 'No model provider is ready. Each disabled provider lists its exact local requirement.';
+      }
+    } catch (error) {
+      this.providers = [];
+      this.selectedProvider = null;
+      if (cards) cards.textContent = `Model provider service unavailable: ${error.message}`;
+      if (status) status.textContent = `Run is disabled: ${error.message}`;
+      if (runButton) runButton.disabled = true;
+    }
+  }
+
+  escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (character) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[character]);
+  }
+
+  renderProviders() {
+    const cards = document.getElementById('model-provider-cards');
+    if (!cards) return;
+    cards.innerHTML = this.providers.map((provider) => `
+      <button class="model-provider-card ${provider.id === this.selectedProvider ? 'selected' : ''}"
+        type="button" data-provider-id="${this.escapeHtml(provider.id)}" role="radio"
+        aria-checked="${provider.id === this.selectedProvider}" ${provider.enabled ? '' : 'disabled'}>
+        <span class="model-provider-card-heading">
+          <strong>${this.escapeHtml(provider.label)}</strong>
+          <span>${provider.enabled ? 'Ready' : 'Unavailable'}</span>
+        </span>
+        <span>${this.escapeHtml(provider.description)}</span>
+        <span><strong>Imagery:</strong> ${this.escapeHtml(provider.resolution_label)}</span>
+        <span class="model-provider-caveat">${this.escapeHtml(provider.caveat)}</span>
+        ${provider.reason ? `<span class="model-provider-reason">${this.escapeHtml(provider.reason)}</span>` : ''}
+      </button>
+    `).join('');
+  }
+
+  selectProvider(providerId) {
+    const provider = this.providers.find((entry) => entry.id === providerId && entry.enabled);
+    if (!provider) return;
+    this.selectedProvider = providerId;
+    this.onTrace('provider chosen', providerId);
+    const threshold = document.getElementById('model-conf-slider');
+    const resolution = document.getElementById('model-resolution-m');
+    const minimumArea = document.getElementById('model-min-area');
+    if (threshold) threshold.value = String(provider.default_threshold);
+    if (resolution) resolution.value = String(provider.expected_resolution_m);
+    if (minimumArea) minimumArea.value = String(provider.default_min_area_m2);
+    this.renderProviders();
+    this.updateThresholdLabel();
+    this.updateAreaEstimate();
+    const runButton = document.getElementById('btn-run-inference');
+    if (runButton) runButton.disabled = !this.getProjectContext().projectId || this.isRunning;
+  }
+
+  updateThresholdLabel() {
+    const slider = document.getElementById('model-conf-slider');
+    const label = document.getElementById('model-threshold-value');
+    if (slider && label) label.value = Number(slider.value).toFixed(2);
+    this.updateAreaEstimate();
+  }
+
+  updateAreaEstimate() {
+    const estimate = document.getElementById('model-area-estimate');
+    const provider = this.providers.find((entry) => entry.id === this.selectedProvider);
+    const context = this.getProjectContext();
+    if (!estimate || !provider || !context.raster) return;
+    const raster = context.raster;
+    const centerLatitude = (raster.bounds_wgs84?.[0]?.[0] + raster.bounds_wgs84?.[1]?.[0]) / 2;
+    const sourceGroundGsd = Number(raster.gsd_x || raster.gsd_y) * Math.cos((centerLatitude * Math.PI) / 180);
+    const targetGsd = Number(document.getElementById('model-resolution-m')?.value || provider.expected_resolution_m);
+    let widthM = Number(raster.width) * sourceGroundGsd;
+    let heightM = Number(raster.height) * sourceGroundGsd;
+    if (this.areaMode === 'draw' && this.area) {
+      const ring = this.area.coordinates?.[0] || [];
+      const longitudes = ring.map((point) => point[0]);
+      const latitudes = ring.map((point) => point[1]);
+      if (longitudes.length && latitudes.length) {
+        const lat = (Math.min(...latitudes) + Math.max(...latitudes)) / 2;
+        widthM = (Math.max(...longitudes) - Math.min(...longitudes)) * 111320 * Math.cos((lat * Math.PI) / 180);
+        heightM = (Math.max(...latitudes) - Math.min(...latitudes)) * 110574;
+      }
+    }
+    if (!Number.isFinite(targetGsd) || targetGsd <= 0 || !Number.isFinite(sourceGroundGsd)) {
+      estimate.textContent = 'Tile count and runtime estimate unavailable for this raster.';
+      return;
+    }
+    const widthPixels = widthM / targetGsd;
+    const heightPixels = heightM / targetGsd;
+    const countTiles = (pixels) => Math.max(1, Math.ceil(Math.max(0, pixels - 512) / 256) + 1);
+    const tileCount = countTiles(widthPixels) * countTiles(heightPixels);
+    const measuredSecondsPerTile = this.lastSecondsPerTile[provider.id] ?? provider.runtime_sample?.seconds_per_tile;
+    const runtimeBasis = this.lastSecondsPerTile[provider.id]
+      ? "this provider's last local run"
+      : provider.runtime_sample
+        ? `a saved ${provider.runtime_sample.tile_count}-tile run${provider.runtime_sample.device ? ` on ${provider.runtime_sample.device}` : ''}`
+        : '';
+    const runtime = Number.isFinite(measuredSecondsPerTile)
+      ? `Rough runtime: about ${(tileCount * measuredSecondsPerTile / 60).toFixed(1)} min, based on ${runtimeBasis}.`
+      : 'Rough runtime: unavailable; no saved local timing for this provider yet.';
+    estimate.textContent = `${this.areaMode === 'draw' && this.area ? 'Drawn area' : 'Whole image'} · about ${tileCount} overlapping tiles · ${runtime} Draw area is recommended for large images.`;
+  }
+
+  beginAreaDrawing() {
+    const context = this.getProjectContext();
+    if (!context.projectId) return;
+    this.areaMode = 'draw';
+    this.area = null;
+    this.closeModelModal();
+    this.onTrace('area drawing started', context.projectId);
+    this.onDrawArea((aoi) => {
+      this.area = aoi;
+      if (!aoi) this.areaMode = 'whole';
+      const wholeRadio = document.querySelector('input[name="model-area-mode"][value="whole"]');
+      const drawRadio = document.querySelector('input[name="model-area-mode"][value="draw"]');
+      if (wholeRadio) wholeRadio.checked = this.areaMode === 'whole';
+      if (drawRadio) drawRadio.checked = this.areaMode === 'draw';
+      this.onTrace('area selected', aoi ? 'rectangle selected' : 'drawing cancelled');
+      this.updateAreaEstimate();
+      this.showModelModal();
+    });
   }
 
   async selectSavedPrediction() {
@@ -76,6 +258,8 @@ export class ModelModalController {
   }
 
   async openDiscrepancyModal(iouThreshold = 0.35) {
+    const context = this.getProjectContext();
+    if (!context.hasReferenceLayer) return;
     if (!this.discrepancyModal) return;
     this.discrepancyModal.classList.add('active');
     const contentBox = document.getElementById('discrepancy-content-area');
@@ -83,7 +267,7 @@ export class ModelModalController {
 
     contentBox.innerHTML = '<p>Evaluating AI vs reference spatial discrepancies...</p>';
     try {
-      const data = await ApiClient.getDiscrepancies(iouThreshold);
+      const data = await ApiClient.getDiscrepancies(iouThreshold, context.projectId);
       if (data.status === 'no_predictions') {
         contentBox.innerHTML = `
           <div style="background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 6px; padding: 12px; color: #fbbf24; margin-bottom: 12px; font-size: 12px;">
@@ -208,51 +392,76 @@ export class ModelModalController {
   }
 
   closeModals() {
-    if (this.modelModal) this.modelModal.classList.remove('active');
+    this.closeModelModal();
     if (this.benchmarkModal) this.benchmarkModal.classList.remove('active');
     if (this.discrepancyModal) this.discrepancyModal.classList.remove('active');
   }
 
   async executeInference() {
-    const modelSelect = document.getElementById('model-select');
     const confSlider = document.getElementById('model-conf-slider');
-    const simulateFailureCheck = document.getElementById('model-simulate-failure');
     const statusBox = document.getElementById('model-inference-status');
     const btnRun = document.getElementById('btn-run-inference');
-
-    const providerId = modelSelect ? modelSelect.value : 'whu';
-    const mode = providerId === 'deeplab' ? 'deeplab' : 'live';
-    const modelName = providerId === 'deeplab'
-      ? 'aatifjiwani/rgb-footprint-extract'
-      : 'giswqs/whu-building-unetplusplus-efficientnet-b4';
-    const confThreshold = confSlider ? parseFloat(confSlider.value) : 0.5;
-    const simulateFailure = simulateFailureCheck ? simulateFailureCheck.checked : false;
-
-    btnRun.disabled = true;
-    statusBox.innerHTML = `
-      <div style="display: flex; align-items: center; gap: 8px; color: var(--accent-cyan);">
-        <span>⚡ Executing inference (${mode.toUpperCase()} mode: ${modelName})...</span>
-      </div>
-    `;
-
+    const context = this.getProjectContext();
+    const provider = this.providers.find((entry) => entry.id === this.selectedProvider && entry.enabled);
+    if (!provider || !context.projectId) {
+      if (statusBox) statusBox.textContent = 'Choose an available provider and open a project first.';
+      return;
+    }
+    if (this.areaMode === 'draw' && !this.area) {
+      if (statusBox) statusBox.textContent = 'Draw a rectangle on the map or choose Whole image.';
+      return;
+    }
+    const resolutionValue = document.getElementById('model-resolution-m')?.value;
+    const minAreaValue = document.getElementById('model-min-area')?.value;
+    const request = {
+      provider: provider.id,
+      threshold: Number(confSlider?.value ?? provider.default_threshold),
+      aoi: this.areaMode === 'draw' ? this.area : null,
+      resolution_m: resolutionValue ? Number(resolutionValue) : null,
+      min_area_m2: minAreaValue ? Number(minAreaValue) : provider.default_min_area_m2,
+    };
+    this.isRunning = true;
+    if (btnRun) {
+      btnRun.disabled = true;
+      btnRun.textContent = 'Running...';
+    }
+    if (statusBox) statusBox.textContent = 'Preparing project imagery and model weights...';
     try {
-      const result = await ApiClient.runModelInference(mode, modelName, confThreshold, simulateFailure);
-      statusBox.innerHTML = `
-        <div style="color: var(--accent-emerald); font-weight: 500;">
-          ✓ Inference Success (${mode.toUpperCase()} mode)! Extracted ${result.detected_count} building footprints.
-          <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Features loaded into active review layer with source="ai_building_model".</div>
-        </div>
-      `;
-      btnRun.disabled = false;
-      this.onInferenceSuccess(result);
+      this.onTrace('request sent', `${provider.id} on ${context.projectId}`);
+      const started = await ApiClient.runProjectBuildingModel(context.projectId, request);
+      this.onTrace('response status', String(started.http_status));
+      let job = await ApiClient.getProjectJob(started.job_id);
+      while (job.status === 'queued' || job.status === 'running') {
+        const progress = job.progress || {};
+        if (statusBox) statusBox.textContent = `Running ${provider.label}: ${progress.done || 0} / ${progress.total || '?'} tiles (${progress.percent || 0}%).`;
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        job = await ApiClient.getProjectJob(started.job_id);
+      }
+      if (job.status !== 'completed') throw new Error(job.error_message || `Model job ended with status ${job.status}.`);
+      const summary = job.result_summary || {};
+      await this.onProjectModelComplete(job, summary);
+      this.onTrace('layer added', `${summary.layer_id || 'ai_predictions'} · ${summary.feature_count ?? job.feature_count} features`);
+      const featureCount = summary.feature_count ?? job.feature_count ?? 0;
+      const tileCount = summary.tile_count;
+      const sourceGsd = summary.source_ground_resolution_m;
+      const targetGsd = summary.inference_resolution_m;
+      if (Number.isFinite(tileCount) && Number.isFinite(job.elapsed_seconds)) {
+        this.lastSecondsPerTile[provider.id] = job.elapsed_seconds / Math.max(tileCount, 1);
+      }
+      if (statusBox) {
+        statusBox.textContent = `${featureCount} buildings found. Inference resolution: ${Number.isFinite(targetGsd) ? `${targetGsd.toFixed(2)} m/pixel` : 'provider default'}.${Number.isFinite(sourceGsd) ? ` Source ground resolution: ${sourceGsd.toFixed(3)} m/pixel.` : ''}${summary.warnings?.length ? ` Warning: ${summary.warnings.join(' ')}` : ''}`;
+      }
+      this.onTrace('complete', `${featureCount} buildings`);
     } catch (err) {
-      statusBox.innerHTML = `
-        <div style="color: var(--accent-rose); font-weight: 500;">
-          ✕ Inference Failed (Handled Gracefully):
-          <div style="font-size: 11px; margin-top: 4px;">${err.message}</div>
-        </div>
-      `;
-      btnRun.disabled = false;
+      if (statusBox) statusBox.textContent = `Model run failed: ${err.message}`;
+      this.onTrace('failed', err.message);
+      this.onToast(`Model run failed: ${err.message}`, 'danger');
+    } finally {
+      this.isRunning = false;
+      if (btnRun) {
+        btnRun.disabled = !this.providers.some((entry) => entry.id === this.selectedProvider && entry.enabled);
+        btnRun.textContent = 'Run model';
+      }
     }
   }
 }

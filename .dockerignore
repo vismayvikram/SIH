@@ -1,0 +1,11 @@
++.git
++.venv
++venv
++__pycache__
++*.py[cod]
++.pytest_cache
++.vscode
++tests
++scratch
++temp_vaayu_inspect
++data

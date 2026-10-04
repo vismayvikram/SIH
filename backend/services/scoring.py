@@ -20,7 +20,8 @@ def load_scoring_config() -> Dict[str, Any]:
 def calculate_review_score(
     feature: Dict[str, Any],
     associated_warning_ids: Optional[List[str]] = None,
-    config: Optional[Dict[str, Any]] = None
+    config: Optional[Dict[str, Any]] = None,
+    associated_warnings: Optional[List[Any]] = None,
 ) -> ReviewScoreBreakdown:
     """
     Computes explainable review score and returns structured breakdown.
@@ -54,6 +55,10 @@ def calculate_review_score(
             
     # 2. Geometry anomaly / invalid / empty geometry
     warning_ids_list = associated_warning_ids or []
+    warning_records = [
+        warning.model_dump() if hasattr(warning, "model_dump") else dict(warning)
+        for warning in (associated_warnings or [])
+    ]
     has_invalid_geom = any("INVALID" in wid or "CORRUPT" in wid for wid in warning_ids_list)
     has_empty_geom = any("EMPTY" in wid for wid in warning_ids_list)
     
@@ -87,12 +92,41 @@ def calculate_review_score(
     if len(overlap_warnings) > 0:
         rule = next((r for r in config["rules"] if r["rule_id"] == "R_SPATIAL_OVERLAP_WARNING"), None)
         if rule:
+            relevant_records = [
+                warning for warning in warning_records
+                if warning.get("warning_id") in overlap_warnings
+            ]
+            evidence_summary = [
+                {
+                    "warning_id": warning.get("warning_id"),
+                    "warning_type": warning.get("warning_type"),
+                    "evidence": warning.get("evidence", {}),
+                    "tolerance": warning.get("tolerance", {}),
+                }
+                for warning in relevant_records
+            ]
+            measured_text = "; ".join(
+                f"{warning.get('warning_id')}: " + ", ".join(
+                    f"{name}={value}" for name, value in warning.get("evidence", {}).items()
+                    if isinstance(value, (int, float))
+                )
+                for warning in relevant_records
+            )
             current_score += rule["points"]
             triggered_rules.append(ScoreRuleContribution(
                 rule_id=rule["rule_id"],
                 rule_name=rule["rule_name"],
-                description=f"{rule['description']} ({len(overlap_warnings)} warnings active: {', '.join(overlap_warnings[:3])})",
-                points=rule["points"]
+                description=(
+                    f"{rule['description']} ({len(overlap_warnings)} warnings active: "
+                    f"{', '.join(overlap_warnings[:3])})"
+                    + (f" Measured evidence: {measured_text}." if measured_text else "")
+                ),
+                points=rule["points"],
+                evidence={"warnings": evidence_summary} if evidence_summary else {},
+                suggested_actions=[
+                    warning["suggested_action"] for warning in relevant_records
+                    if warning.get("suggested_action")
+                ],
             ))
             
     # 4. Low model confidence (for AI building model)

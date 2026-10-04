@@ -20,6 +20,7 @@ import numpy as np
 import shapely.geometry
 import shapely.ops
 import pyproj
+from backend.services.mask_cleanup import clean_binary_mask
 
 try:
     import rasterio
@@ -47,6 +48,8 @@ class InferenceJobManager:
         self.lock = threading.Lock()
         self.status = "idle"  # idle, running, completed, failed
         self.job_id: Optional[str] = None
+        self.project_id: Optional[str] = None
+        self.provider_id: Optional[str] = None
         self.progress_percent: float = 0.0
         self.tile_count: int = 0
         self.tiles_processed: int = 0
@@ -56,10 +59,19 @@ class InferenceJobManager:
         self.error_message: Optional[str] = None
         self.result_summary: Optional[Dict[str, Any]] = None
 
-    def start_job(self, job_id: str, total_tiles: int, device_str: str):
+    def start_job(
+        self,
+        job_id: str,
+        total_tiles: int,
+        device_str: str,
+        project_id: Optional[str] = None,
+        provider_id: Optional[str] = None,
+    ):
         with self.lock:
             self.status = "running"
             self.job_id = job_id
+            self.project_id = project_id
+            self.provider_id = provider_id
             self.progress_percent = 0.0
             self.tile_count = total_tiles
             self.tiles_processed = 0
@@ -93,6 +105,8 @@ class InferenceJobManager:
             return {
                 "status": self.status,
                 "job_id": self.job_id,
+                "project_id": self.project_id,
+                "provider_id": self.provider_id,
                 "progress_percent": self.progress_percent,
                 "tiles_processed": self.tiles_processed,
                 "total_tiles": self.tile_count,
@@ -124,14 +138,17 @@ def get_whu_model_checkpoint() -> Tuple[str, str, int]:
 def preprocess_lalpur_raster_if_needed(
     src_tif_path: str = "data/acquisition/SIH26012_INDIA_CANDIDATE_01/working/lalpur_orthomosaic.tif",
     out_dir: str = "data/local_model_run",
-    target_gsd: float = 0.30
+    target_gsd: float = 0.30,
+    rgb_band_mapping: Optional[List[int]] = None,
+    alpha_band: Optional[int] = None,
 ) -> str:
     """Preprocesses 4-band sub-meter TIFF to 3-band RGB 0.30m GSD TIFF with alpha masking."""
     if not RASTERIO_AVAILABLE:
         raise RuntimeError("Rasterio is required for raster preprocessing.")
 
     os.makedirs(out_dir, exist_ok=True)
-    target_path = os.path.join(out_dir, "lalpur_rgb_0.30m.tif")
+    output_name = "project_rgb_0.30m.tif" if rgb_band_mapping else "lalpur_rgb_0.30m.tif"
+    target_path = os.path.join(out_dir, output_name)
 
     if os.path.exists(target_path):
         return target_path
@@ -140,8 +157,8 @@ def preprocess_lalpur_raster_if_needed(
         orig_gsd_x = src.transform.a
         orig_gsd_y = abs(src.transform.e)
 
-        target_width = int(round(src.width * (orig_gsd_x / target_gsd)))
-        target_height = int(round(src.height * (orig_gsd_y / target_gsd)))
+        target_width = max(1, int(round(src.width * (orig_gsd_x / target_gsd))))
+        target_height = max(1, int(round(src.height * (orig_gsd_y / target_gsd))))
 
         new_transform = rasterio.transform.from_bounds(
             src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top,
@@ -149,12 +166,25 @@ def preprocess_lalpur_raster_if_needed(
         )
 
         data_rgb = src.read(
-            [1, 2, 3],
+            rgb_band_mapping or [1, 2, 3],
             out_shape=(3, target_height, target_width),
             resampling=Resampling.average
         )
 
-        if src.count >= 4:
+        if rgb_band_mapping:
+            valid_mask = src.dataset_mask(
+                out_shape=(target_height, target_width),
+                resampling=Resampling.nearest,
+            )
+            data_rgb[:, valid_mask == 0] = 0
+            if alpha_band:
+                alpha = src.read(
+                    alpha_band,
+                    out_shape=(target_height, target_width),
+                    resampling=Resampling.nearest,
+                )
+                data_rgb[:, alpha == 0] = 0
+        elif src.count >= 4:
             alpha = src.read(
                 4,
                 out_shape=(target_height, target_width),
@@ -184,11 +214,20 @@ def run_whu_live_inference(
     min_area_cutoff_sqm: float = 10.0,
     tile_size: int = 512,
     stride: int = 256,
+    morphology_opening_px: int = 0,
+    morphology_closing_px: int = 0,
     src_tif_path: str = "data/acquisition/SIH26012_INDIA_CANDIDATE_01/working/lalpur_orthomosaic.tif",
-    out_dir: str = "data/local_model_run"
+    out_dir: str = "data/local_model_run",
+    rgb_band_mapping: Optional[List[int]] = None,
+    alpha_band: Optional[int] = None,
+    project_id: Optional[str] = None,
+    run_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Runs sliding window inference on Lalpur orthomosaic and generates GeoJSON predictions."""
     start_time = time.time()
+
+    # Validate options before loading the checkpoint or starting a long run.
+    clean_binary_mask(np.zeros((1, 1), dtype=np.uint8), morphology_opening_px, morphology_closing_px)
     
     if not TORCH_AVAILABLE or not RASTERIO_AVAILABLE:
         raise RuntimeError("Missing PyTorch or Rasterio ML dependencies.")
@@ -196,7 +235,7 @@ def run_whu_live_inference(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     weight_path, weight_sha256, weight_size = get_whu_model_checkpoint()
 
-    run_id = f"run-whu-{int(time.time() * 1000)}"
+    run_id = run_id or f"run-whu-{int(time.time() * 1000)}"
     if out_dir == "data/local_model_run":
         out_dir = os.path.join(out_dir, "runs", "whu", run_id)
     os.makedirs(out_dir, exist_ok=True)
@@ -207,8 +246,12 @@ def run_whu_live_inference(
     model.to(device)
     model.eval()
 
-    # Preprocess raster
-    working_tif = preprocess_lalpur_raster_if_needed(src_tif_path=src_tif_path, out_dir=out_dir)
+    working_tif = preprocess_lalpur_raster_if_needed(
+        src_tif_path=src_tif_path,
+        out_dir=out_dir,
+        rgb_band_mapping=rgb_band_mapping,
+        alpha_band=alpha_band,
+    )
 
     with rasterio.open(working_tif) as src:
         width = src.width
@@ -226,48 +269,44 @@ def run_whu_live_inference(
     mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1).to(device)
     std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1).to(device)
 
-    y_steps = list(range(0, height - tile_size + 1, stride))
+    y_steps = list(range(0, height - tile_size + 1, stride)) or [0]
     if y_steps[-1] + tile_size < height:
-        y_steps.append(height - tile_size)
-    x_steps = list(range(0, width - tile_size + 1, stride))
+        y_steps.append(max(0, height - tile_size))
+    x_steps = list(range(0, width - tile_size + 1, stride)) or [0]
     if x_steps[-1] + tile_size < width:
-        x_steps.append(width - tile_size)
+        x_steps.append(max(0, width - tile_size))
 
     total_tiles = len(y_steps) * len(x_steps)
-    job_manager.start_job(run_id, total_tiles, str(device))
+    job_manager.start_job(run_id, total_tiles, str(device), project_id=project_id, provider_id="whu" if project_id else None)
 
     tiles_done = 0
     failed_tiles = 0
-
     with torch.no_grad():
         for y in y_steps:
             for x in x_steps:
                 tiles_done += 1
-                rgb_tile = rgb_data[:, y:y+tile_size, x:x+tile_size]
-
+                rgb_tile = rgb_data[:, y:y + tile_size, x:x + tile_size]
+                tile_height, tile_width = rgb_tile.shape[1:]
                 if rgb_tile.max() > 0:
                     try:
-                        tensor = torch.from_numpy(rgb_tile).float().to(device) / 255.0
-                        norm_tensor = (tensor - mean) / std
-                        input_batch = norm_tensor.unsqueeze(0)
-
+                        padded_tile = np.zeros((3, tile_size, tile_size), dtype=rgb_tile.dtype)
+                        padded_tile[:, :tile_height, :tile_width] = rgb_tile
+                        tensor = torch.from_numpy(padded_tile).float().to(device) / 255.0
+                        input_batch = ((tensor - mean) / std).unsqueeze(0)
                         output = model(input_batch)
                         probs = torch.softmax(output, dim=1)
-                        bldg_prob = probs[0, 1].cpu().numpy()
-
-                        prob_sum[y:y+tile_size, x:x+tile_size] += bldg_prob * window_2d
-                        weight_sum[y:y+tile_size, x:x+tile_size] += window_2d
-                    except Exception as e:
+                        bldg_prob = probs[0, 1, :tile_height, :tile_width].cpu().numpy()
+                        tile_weight = window_2d[:tile_height, :tile_width]
+                        prob_sum[y:y + tile_height, x:x + tile_width] += bldg_prob * tile_weight
+                        weight_sum[y:y + tile_height, x:x + tile_width] += tile_weight
+                    except Exception:
                         failed_tiles += 1
-
                 job_manager.update_progress(tiles_done, failed_tiles, time.time() - start_time)
 
     weight_sum[weight_sum == 0] = 1.0
     final_prob = prob_sum / weight_sum
-    nodata_mask = (rgb_data.sum(axis=0) == 0)
-    final_prob[nodata_mask] = 0.0
+    final_prob[rgb_data.sum(axis=0) == 0] = 0.0
 
-    # Save probability map TIFF
     out_prob_path = os.path.join(out_dir, "building_probability.tif")
     with rasterio.open(
         out_prob_path, "w",
@@ -276,11 +315,34 @@ def run_whu_live_inference(
     ) as dst:
         dst.write(final_prob, 1)
 
-    # Vectorize predictions
-    binary_mask = (final_prob >= confidence_threshold).astype(np.uint8)
+    binary_mask = clean_binary_mask(
+        final_prob >= confidence_threshold,
+        opening_px=morphology_opening_px,
+        closing_px=morphology_closing_px,
+    )
+    out_mask_path = None
+    if project_id:
+        out_mask_path = os.path.join(out_dir, "building_mask.tif")
+        with rasterio.open(
+            out_mask_path, "w",
+            driver="GTiff", height=height, width=width, count=1,
+            dtype="uint8", crs=crs, transform=transform, nodata=0
+        ) as dst:
+            dst.write(binary_mask, 1)
+
+    # Vectorize the same cleaned mask written to disk (if this is a project run).
 
     transformer_3857_to_4326 = pyproj.Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-    transformer_3857_to_32643 = pyproj.Transformer.from_crs("EPSG:3857", "EPSG:32643", always_xy=True)
+    area_crs = "EPSG:32643"
+    if project_id:
+        with rasterio.open(src_tif_path) as source:
+            center_lon, center_lat = transformer_3857_to_4326.transform(
+                (source.bounds.left + source.bounds.right) / 2,
+                (source.bounds.bottom + source.bounds.top) / 2,
+            )
+        utm_zone = max(1, min(60, int((center_lon + 180) // 6) + 1))
+        area_crs = f"EPSG:{32600 + utm_zone if center_lat >= 0 else 32700 + utm_zone}"
+    transformer_3857_to_area = pyproj.Transformer.from_crs("EPSG:3857", area_crs, always_xy=True)
 
     features = []
     raw_polygon_count = 0
@@ -296,8 +358,8 @@ def run_whu_live_inference(
         if poly_3857.is_empty:
             continue
 
-        poly_32643 = shapely.ops.transform(transformer_3857_to_32643.transform, poly_3857)
-        area_sqm = poly_32643.area
+        poly_area = shapely.ops.transform(transformer_3857_to_area.transform, poly_3857)
+        area_sqm = poly_area.area
 
         if area_sqm < min_area_cutoff_sqm:
             continue
@@ -331,7 +393,10 @@ def run_whu_live_inference(
                 "area_sqm": round(float(area_sqm), 1),
                 "verification_status": "unverified",
                 "review_status": "unverified",
-                "notes": "Pretrained WHU Unet++ transfer inference output"
+                **({
+                    "project_id": project_id,
+                    "alignment_status": "not evaluated against project reference data; predictions are unreviewed AI suggestions",
+                } if project_id else {}),
             }
         })
 
@@ -343,19 +408,34 @@ def run_whu_live_inference(
             "model_name": MODEL_REPO_ID,
             "model_version": MODEL_COMMIT_SHA,
             "model_weight_sha256": weight_sha256,
-            "weight_file_bytes": weight_size,
+            "weight_size_bytes": weight_size,
+            "inference_status": "success",
             "run_id": run_id,
             "device": str(device),
             "tile_count": total_tiles,
             "failed_tiles": failed_tiles,
             "confidence_threshold": confidence_threshold,
+            "morphology_opening_px": morphology_opening_px,
+            "morphology_closing_px": morphology_closing_px,
             "min_area_cutoff_sqm": min_area_cutoff_sqm,
             "raw_polygon_count": raw_polygon_count,
             "filtered_polygon_count": len(features),
             "valid_feature_count": len(features),
             "output_path": out_geojson_path,
             "elapsed_seconds": round(time.time() - start_time, 2),
-            "alignment_status": "confirmed by user in QGIS; local reference set, not an official/legal accuracy benchmark"
+            "alignment_status": "not evaluated against project reference data; predictions are unreviewed AI suggestions" if project_id else "confirmed by user in QGIS; local reference set, not an official/legal accuracy benchmark",
+            **({
+                "project_id": project_id,
+                "input_raster_path": src_tif_path,
+                "rgb_band_mapping": rgb_band_mapping or [1, 2, 3],
+                "alpha_band": alpha_band,
+                "preprocessed_raster_path": working_tif,
+                "target_gsd_m": 0.30,
+                "resampling": "average",
+                "probability_path": out_prob_path,
+                "mask_path": out_mask_path,
+                "area_measurement_crs": area_crs,
+            } if project_id else {}),
         },
         "features": features
     }
@@ -364,8 +444,8 @@ def run_whu_live_inference(
         json.dump(geojson_doc, f, indent=2)
 
     # Write MODEL_RUN.md manifest
-    model_run_md = f"""# SIH26012 Model Run Manifest — {run_id}
-
+    run_title = "Project Model Run" if project_id else "Model Run Manifest"
+    model_run_md = f"""# SIH26012 {run_title} — {run_id}
 - **Model Identifier**: `{MODEL_REPO_ID}`
 - **Model Revision / Commit**: `{MODEL_COMMIT_SHA}`
 - **Model Weight File SHA-256**: `{weight_sha256}`
@@ -377,21 +457,40 @@ def run_whu_live_inference(
 - **Failed Tiles**: {failed_tiles}
 - **Elapsed Time**: {time.time() - start_time:.2f} seconds
 - **Confidence Threshold**: {confidence_threshold}
-- **Metric Area Cutoff**: {min_area_cutoff_sqm} m² (EPSG:32643)
+- **Morphology Opening (px)**: {morphology_opening_px}
+- **Morphology Closing (px)**: {morphology_closing_px}
+- **Metric Area Cutoff**: {min_area_cutoff_sqm} m² ({area_crs})
 - **Raw Polygon Detections**: {raw_polygon_count}
-- **Filtered Polygon Features**: {len(features)}
+- **Project ID**: `{project_id or 'SIH26012_INDIA_CANDIDATE_01_LALPUR'}`
+- **Input Raster**: `{src_tif_path}`
+- **RGB Band Mapping**: `{rgb_band_mapping or [1, 2, 3]}`
+- **Area Measurement CRS**: `{area_crs}`
+- **Alignment Disposition**: `{geojson_doc['model_metadata']['alignment_status']}`
 - **Output GeoJSON**: `{out_geojson_path}`
-- **Alignment Disposition**: `confirmed by user in QGIS; local reference set, not an official/legal accuracy benchmark`
 """
     with open(os.path.join(out_dir, "MODEL_RUN.md"), "w") as f:
         f.write(model_run_md)
 
     summary = {
         "status": "success",
+        "run_id": run_id,
         "detected_count": len(features),
+        "valid_feature_count": len(features),
         "raw_polygon_count": raw_polygon_count,
-        "features": features,
-        "metadata": geojson_doc["model_metadata"]
+        "tile_count": total_tiles,
+        "failed_tiles": failed_tiles,
+        "elapsed_seconds": round(time.time() - start_time, 2),
+        "device": str(device),
+        "morphology_opening_px": morphology_opening_px,
+        "morphology_closing_px": morphology_closing_px,
+        "output_path": out_geojson_path,
+        "probability_path": out_prob_path,
+        "mask_path": out_mask_path,
+        "model_name": MODEL_REPO_ID,
+        "model_version": MODEL_COMMIT_SHA,
+        "model_weight_sha256": weight_sha256,
+        "weight_size_bytes": weight_size,
+        "alignment_status": geojson_doc["model_metadata"]["alignment_status"],
     }
     job_manager.complete_job(summary)
     return geojson_doc

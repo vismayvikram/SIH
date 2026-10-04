@@ -5,6 +5,7 @@ dynamic re-calculation of topology warnings, review-priority scoring, and persis
 """
 import os
 import json
+import hashlib
 import math
 import copy
 from datetime import datetime, timezone
@@ -39,53 +40,86 @@ from backend.services.scoring import calculate_review_score
 from backend.models.schemas import TopologyWarning, ReviewScoreBreakdown
 
 STATE_FILE_PATH = "data/local_model_run/store_state.json"
+DEFAULT_LALPUR_PROJECT_ID = "SIH26012_INDIA_CANDIDATE_01_LALPUR"
+SAVED_FINETUNED_RUN_DIR = os.path.join(
+    "data", "local_model_run", "lalpur_improvement", "run-deeplab-20261004-141612"
+)
+SAVED_FINETUNED_LAYER = "ai_deeplab_finetuned_predictions"
+PROJECT_STORES: Dict[str, "FeatureStore"] = {}
+
+
+class SavedPredictionLoadError(ValueError):
+    """Raised when the exact saved fine-tuned run cannot be loaded safely."""
 
 class FeatureStore:
     """Central state manager for the local prototype with local disk persistence."""
     
-    def __init__(self, state_file_path: str = STATE_FILE_PATH):
+    def __init__(
+        self,
+        state_file_path: Optional[str] = STATE_FILE_PATH,
+        saved_finetuned_run_dir: str = SAVED_FINETUNED_RUN_DIR,
+        project_id: Optional[str] = None,
+    ):
+        self.project_id = project_id or DEFAULT_LALPUR_PROJECT_ID
         self.state_file_path = state_file_path
-        self.layers: Dict[str, List[Dict[str, Any]]] = {
+        self.saved_finetuned_run_dir = saved_finetuned_run_dir
+        self._saved_finetuned_collection: Optional[Dict[str, Any]] = None
+        self.layers: Dict[str, List[Dict[str, Any]]] = self._empty_layers()
+        self.warnings: List[TopologyWarning] = []
+        self.scores: Dict[str, ReviewScoreBreakdown] = {}
+        self.active_prediction_metadata: Optional[Dict[str, Any]] = None
+        self.is_initialized = False
+
+    @staticmethod
+    def _empty_layers() -> Dict[str, List[Dict[str, Any]]]:
+        return {
             "buildings": [],
             "roads": [],
             "osm_roads": [],
             "parcels": [],
             "synthetic": [],
             "drafts": [],
-            "ai_predictions": []
+            "ai_predictions": [],
+            "ai_whu_predictions": [],
+            "ai_deeplab_predictions": [],
+            "ai_mock_predictions": []
         }
-        self.warnings: List[TopologyWarning] = []
-        self.scores: Dict[str, ReviewScoreBreakdown] = {}
-        self.active_prediction_metadata: Optional[Dict[str, Any]] = None
-        self.is_initialized = False
+
+    @staticmethod
+    def _default_state_file_for_project(project_id: str) -> str:
+        if not project_id or project_id == DEFAULT_LALPUR_PROJECT_ID:
+            return STATE_FILE_PATH
+        from backend.services.project_registry import project_registry
+        return os.path.join(project_registry.project_storage_dir(project_id), "store_state.json")
 
     def initialize(self, force_reload: bool = False) -> None:
         """Loads reference layers, synthetic test fixtures, and merges persisted user state."""
         if self.is_initialized and not force_reload:
             return
 
-        # Load baseline GeoJSON files
-        bld_col = load_lalpur_buildings()
-        self.layers["buildings"] = bld_col["features"]
-
-        rd_col = load_lalpur_roads()
-        self.layers["roads"] = rd_col["features"]
-
-        osm_col = load_osm_roads()
-        self.layers["osm_roads"] = osm_col["features"]
-
-        parcel_col = load_blank_parcel_template()
-        self.layers["parcels"] = parcel_col["features"]  # 0 features
-
-        # Load synthetic test fixtures
-        self.layers["synthetic"] = get_synthetic_test_features()
-        self.layers["drafts"] = []
-        self.layers["ai_predictions"] = []
+        self.layers = self._empty_layers()
+        self.warnings = []
+        self.scores = {}
         self.active_prediction_metadata = None
 
-        # Load persisted local edits & predictions if available
-        self._load_persisted_state()
+        if self.project_id == DEFAULT_LALPUR_PROJECT_ID:
+            # Load baseline GeoJSON files
+            bld_col = load_lalpur_buildings()
+            self.layers["buildings"] = bld_col["features"]
 
+            rd_col = load_lalpur_roads()
+            self.layers["roads"] = rd_col["features"]
+
+            osm_col = load_osm_roads()
+            self.layers["osm_roads"] = osm_col["features"]
+
+            parcel_col = load_blank_parcel_template()
+            self.layers["parcels"] = parcel_col["features"]  # 0 features
+
+            # Load synthetic test fixtures
+            self.layers["synthetic"] = get_synthetic_test_features()
+
+        self._load_persisted_state()
         self.revalidate_all()
         self.is_initialized = True
 
@@ -140,6 +174,13 @@ class FeatureStore:
             if isinstance(prediction_metadata, dict) and prediction_metadata.get("source_mode"):
                 self.layers["ai_predictions"] = scrub_nan_floats(state_doc.get("ai_predictions", []))
                 self.active_prediction_metadata = scrub_nan_floats(prediction_metadata)
+                provider_layer = {
+                    "whu": "ai_whu_predictions",
+                    "deeplab": "ai_deeplab_predictions",
+                    "mock": "ai_mock_predictions",
+                }.get(prediction_metadata.get("provider_id"))
+                if provider_layer:
+                    self.layers[provider_layer] = copy.deepcopy(self.layers["ai_predictions"])
 
             modified = state_doc.get("modified_features", {})
             if isinstance(modified, dict):
@@ -169,27 +210,169 @@ class FeatureStore:
             synthetic_features=self.layers["synthetic"]
         )
 
-        feat_warnings_map: Dict[str, List[str]] = {}
-        for w in self.warnings:
-            for fid in w.feature_ids:
-                if fid not in feat_warnings_map:
-                    feat_warnings_map[fid] = []
-                feat_warnings_map[fid].append(w.warning_id)
+        feature_warnings: Dict[str, List[str]] = {}
+        warning_by_id = {warning.warning_id: warning for warning in self.warnings}
+        for warning in self.warnings:
+            for feature_id in warning.feature_ids:
+                feature_warnings.setdefault(feature_id, []).append(warning.warning_id)
 
         self.scores.clear()
-        for layer_name, feature_list in self.layers.items():
-            for feat in feature_list:
-                fid = feat["id"]
-                w_ids = feat_warnings_map.get(fid, [])
-                feat["properties"]["warning_ids"] = w_ids
-                
-                score_breakdown = calculate_review_score(feat, associated_warning_ids=w_ids)
-                self.scores[fid] = score_breakdown
-                feat["properties"]["review_score"] = score_breakdown.total_score
+        for feature_list in self.layers.values():
+            for feature in feature_list:
+                feature_id = feature["id"]
+                warning_ids = feature_warnings.get(feature_id, [])
+                feature.setdefault("properties", {})["warning_ids"] = warning_ids
+                score = calculate_review_score(
+                    feature,
+                    associated_warning_ids=warning_ids,
+                    associated_warnings=[warning_by_id[warning_id] for warning_id in warning_ids],
+                )
+                self.scores[feature_id] = score
+                feature["properties"]["review_score"] = score.total_score
+
+    def get_layer_manifest(self) -> List[Dict[str, Any]]:
+        """Return a project-specific layer manifest for the sidebar UI."""
+        self.initialize()
+
+        if self.project_id != DEFAULT_LALPUR_PROJECT_ID and not any(
+            self.layers.get(layer_name) for layer_name in [
+                "buildings", "roads", "osm_roads", "parcels", "synthetic",
+                "drafts", "ai_predictions", "ai_whu_predictions",
+                "ai_deeplab_predictions", "ai_mock_predictions"
+            ]
+        ):
+            return [{
+                "id": "orthomosaic",
+                "label": "Orthomosaic",
+                "kind": "reference",
+                "feature_count": 1,
+                "visible_default": True,
+                "read_only": True,
+                "style": {"color": "#60a5fa", "fillColor": "#60a5fa", "weight": 1.5, "fillOpacity": 0.12},
+                "notes": "Project raster available for review. Add/import layers as needed.",
+            }]
+
+        default_layer_specs = [
+            {
+                "id": "buildings",
+                "label": "Building-footprint reference",
+                "kind": "reference",
+                "visible_default": True,
+                "read_only": True,
+                "style": {"color": "#b48954", "fillColor": "#b48954", "weight": 1.5, "fillOpacity": 0.35},
+                "notes": "Reference building footprints",
+            },
+            {
+                "id": "roads",
+                "label": "Village Road Corridors",
+                "kind": "reference",
+                "visible_default": True,
+                "read_only": True,
+                "style": {"color": "#f59e0b", "fillColor": "#f59e0b", "weight": 2, "fillOpacity": 0.25},
+                "notes": "Road corridor reference data",
+            },
+            {
+                "id": "osm_roads",
+                "label": "OSM Road Centerlines",
+                "kind": "reference",
+                "visible_default": True,
+                "read_only": True,
+                "style": {"color": "#7c7b5d", "weight": 3, "dashArray": "6, 6"},
+                "notes": "OpenStreetMap reference lines",
+            },
+            {
+                "id": "parcels",
+                "label": "Cadastral Parcels",
+                "kind": "reference",
+                "visible_default": False,
+                "read_only": True,
+                "style": {"color": "#64748b", "fillColor": "#64748b", "weight": 1, "fillOpacity": 0.12},
+                "notes": "Empty parcel template for this AOI",
+            },
+            {
+                "id": "synthetic",
+                "label": "Synthetic test data",
+                "kind": "review",
+                "visible_default": True,
+                "read_only": False,
+                "style": {"color": "#b9895b", "fillColor": "#b9895b", "weight": 2, "fillOpacity": 0.3},
+                "notes": "Synthetic test fixtures; not real parcels",
+            },
+            {
+                "id": "drafts",
+                "label": "User Review Drafts",
+                "kind": "draft",
+                "visible_default": True,
+                "read_only": False,
+                "style": {"color": "#10b981", "fillColor": "#10b981", "weight": 2, "fillOpacity": 0.36},
+                "notes": "Digitized draft polygons",
+            },
+            {
+                "id": "ai_predictions",
+                "label": "AI Building Model",
+                "kind": "ai",
+                "visible_default": True,
+                "read_only": False,
+                "style": {"color": "#38bdf8", "fillColor": "#38bdf8", "weight": 2, "fillOpacity": 0.22},
+                "notes": "Current active AI predictions",
+            },
+            {
+                "id": "ai_whu_predictions",
+                "label": "WHU U-Net++ Footprints",
+                "kind": "ai",
+                "visible_default": True,
+                "read_only": False,
+                "style": {"color": "#38bdf8", "fillColor": "#38bdf8", "weight": 2, "fillOpacity": 0.2},
+                "notes": "WHU provider output",
+            },
+            {
+                "id": "ai_deeplab_predictions",
+                "label": "DeepLab SpaceNet Footprints",
+                "kind": "ai",
+                "visible_default": True,
+                "read_only": False,
+                "style": {"color": "#f59e0b", "fillColor": "#f59e0b", "weight": 2, "fillOpacity": 0.2},
+                "notes": "DeepLab provider output",
+            },
+            {
+                "id": "ai_deeplab_finetuned_predictions",
+                "label": "DeepLab · Lalpur fine-tuned",
+                "kind": "ai",
+                "visible_default": False,
+                "read_only": True,
+                "style": {"color": "#e11d48", "fillColor": "#e11d48", "weight": 2, "fillOpacity": 0.16, "dashArray": "5 4"},
+                "notes": "Experimental in-sample fine-tuned layer",
+            },
+            {
+                "id": "ai_mock_predictions",
+                "label": "Mock Footprints",
+                "kind": "ai",
+                "visible_default": False,
+                "read_only": False,
+                "style": {"color": "#a855f7", "fillColor": "#a855f7", "weight": 2, "fillOpacity": 0.18},
+                "notes": "Demo provider output",
+            },
+        ]
+
+        manifest = []
+        for spec in default_layer_specs:
+            layer_name = spec["id"]
+            if layer_name not in self.layers:
+                continue
+            if layer_name == "ai_deeplab_finetuned_predictions" and not self.layers.get(layer_name):
+                continue
+            manifest.append({
+                **spec,
+                "feature_count": len(self.layers.get(layer_name, [])),
+                "visible_default": bool(spec["visible_default"]),
+            })
+        return manifest
 
     def get_layer_collection(self, layer_name: str) -> Dict[str, Any]:
         """Returns GeoJSON FeatureCollection representation for the requested layer."""
         self.initialize()
+        if layer_name == SAVED_FINETUNED_LAYER:
+            return copy.deepcopy(self.load_saved_finetuned_collection())
         if layer_name not in self.layers:
             raise KeyError(f"Unknown layer: {layer_name}")
 
@@ -236,6 +419,132 @@ class FeatureStore:
             "features": features
         }
 
+    def load_saved_finetuned_collection(self) -> Dict[str, Any]:
+        """Load the pinned Lalpur candidate without adding it to editable state."""
+        if self._saved_finetuned_collection is not None:
+            return self._saved_finetuned_collection
+
+        run_dir = self.saved_finetuned_run_dir
+        if not os.path.isdir(run_dir):
+            raise SavedPredictionLoadError(
+                f"Saved DeepLab fine-tuned run directory is missing: {run_dir}"
+            )
+
+        def read_json(filename: str) -> Dict[str, Any]:
+            path = os.path.join(run_dir, filename)
+            if not os.path.isfile(path):
+                raise SavedPredictionLoadError(
+                    f"Required saved DeepLab artifact is missing: {path}"
+                )
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    value = json.load(handle)
+            except (OSError, json.JSONDecodeError) as exc:
+                raise SavedPredictionLoadError(
+                    f"Could not read saved DeepLab artifact {path}: {exc}"
+                ) from exc
+            if not isinstance(value, dict):
+                raise SavedPredictionLoadError(
+                    f"Saved DeepLab artifact must contain a JSON object: {path}"
+                )
+            return value
+
+        prediction = read_json("finetuned_predictions.geojson")
+        audit = read_json("audit.json")
+        report = read_json("comparison_report.json")
+        checkpoint_path = os.path.join(run_dir, "fine_tuned_checkpoint.pth")
+        if not os.path.isfile(checkpoint_path):
+            raise SavedPredictionLoadError(
+                f"Required saved DeepLab checkpoint is missing: {checkpoint_path}"
+            )
+        if prediction.get("type") != "FeatureCollection" or not isinstance(prediction.get("features"), list):
+            raise SavedPredictionLoadError(
+                f"Malformed saved DeepLab predictions: expected a FeatureCollection in {os.path.join(run_dir, 'finetuned_predictions.geojson')}"
+            )
+        if any(
+            not isinstance(feature, dict)
+            or not isinstance(feature.get("geometry"), dict)
+            or not isinstance(feature.get("properties"), dict)
+            for feature in prediction["features"]
+        ):
+            raise SavedPredictionLoadError(
+                "Malformed saved DeepLab predictions: every feature must have geometry and properties objects."
+            )
+
+        try:
+            source_metadata = prediction["model_metadata"]
+            threshold = float(source_metadata["threshold"])
+            threshold_key = f"{threshold:.2f}"
+            candidate_metrics = report["finetuned"][threshold_key]
+            baseline_metrics = report["baseline"][threshold_key]
+            input_sha256 = report["input_raster_sha256"]
+            reference_sha256 = report["reference_geojson_sha256"]
+            target_gsd_m = float(report["target_gsd_m"])
+            training_patches = int(report["training_patches"])
+            epochs = int(report["epochs"])
+            inference_stride = int(report["inference_stride"])
+            reference_count = int(audit["label_feature_count"])
+            metric_status = source_metadata["metric_status"]
+            if (
+                threshold != 0.5
+                or metric_status != "in_sample_full_AOI_fit_not_held_out"
+                or reference_count != 317
+                or audit["model_input_sha256"] != input_sha256
+            ):
+                raise ValueError("saved run provenance does not match the pinned Lalpur fit")
+
+            checkpoint_digest = hashlib.sha256()
+            with open(checkpoint_path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    checkpoint_digest.update(chunk)
+
+            warning = (
+                "All 317 reference building footprints were used for fine-tuning. "
+                "Metrics are in-sample, object-level recall is low, and no geographic "
+                "generalization claim is supported."
+            )
+            provider_metadata = {
+                "provider_id": "deeplab-lalpur-finetuned-20261004-141612",
+                "provider_label": "DeepLab · Lalpur fine-tuned (experimental; in-sample)",
+                "run_id": os.path.basename(os.path.normpath(run_dir)),
+                "checkpoint_sha256": checkpoint_digest.hexdigest(),
+                "input_raster_sha256": input_sha256,
+                "reference_geojson_sha256": reference_sha256,
+                "confidence_threshold": threshold,
+                "target_gsd_m": target_gsd_m,
+                "training_patch_count": training_patches,
+                "epochs": epochs,
+                "inference_stride": inference_stride,
+                "reference_feature_count": reference_count,
+                "metric_status": metric_status,
+                "warning": warning,
+                "metrics": {
+                    "candidate": candidate_metrics,
+                    "baseline": baseline_metrics,
+                    "pixel_f1_definition": "F1 on thresholded building-mask pixels (not building-detection accuracy).",
+                    "object_f1_iou_035_definition": "One-to-one building-object matches at footprint IoU >= 0.35.",
+                    "object_f1_iou_050_definition": "One-to-one building-object matches at footprint IoU >= 0.50.",
+                },
+            }
+        except (KeyError, TypeError, ValueError, OSError) as exc:
+            if isinstance(exc, SavedPredictionLoadError):
+                raise
+            raise SavedPredictionLoadError(
+                f"Malformed or inconsistent saved DeepLab run metadata in {run_dir}: {exc}"
+            ) from exc
+
+        collection = copy.deepcopy(prediction)
+        collection["name"] = provider_metadata["provider_id"]
+        collection["total_features"] = len(collection["features"])
+        collection["metadata"] = {
+            **collection.get("metadata", {}),
+            "provider": provider_metadata,
+            "layer_role": "experimental_building_predictions_read_only",
+            "parcel_status": "not_evaluated",
+        }
+        self._saved_finetuned_collection = collection
+        return self._saved_finetuned_collection
+
     def set_prediction_source(
         self,
         features: List[Dict[str, Any]],
@@ -245,6 +554,14 @@ class FeatureStore:
         self.initialize()
         self.layers["ai_predictions"] = scrub_nan_floats(copy.deepcopy(features))
         self.active_prediction_metadata = scrub_nan_floats(copy.deepcopy(metadata))
+        provider_layer = {
+            "whu": "ai_whu_predictions",
+            "deeplab": "ai_deeplab_predictions",
+            "deeplab_lalpur_finetuned": "ai_deeplab_predictions",
+            "mock": "ai_mock_predictions",
+        }.get(metadata.get("provider_id"))
+        if provider_layer:
+            self.layers[provider_layer] = scrub_nan_floats(copy.deepcopy(features))
         self.revalidate_all()
         self._save_persisted_state()
         return self.get_prediction_status()
@@ -264,6 +581,7 @@ class FeatureStore:
         metadata = copy.deepcopy(self.active_prediction_metadata)
         if not metadata:
             return {
+                "project_id": self.project_id,
                 "selected": False,
                 "source_mode": None,
                 "run_id": None,
@@ -272,6 +590,7 @@ class FeatureStore:
             }
         return {
             **metadata,
+            "project_id": self.project_id,
             "selected": True,
             "prediction_count": len(self.layers["ai_predictions"]),
         }
@@ -465,8 +784,8 @@ class FeatureStore:
             },
             "export_metadata": {
                 "exported_at": now_iso,
-                "project_id": "SIH26012_INDIA_CANDIDATE_01_LALPUR",
-                "locality": "Lalpur Village, Gujarat (LGD 511638)",
+                "project_id": self.project_id,
+                "locality": "Lalpur Village, Gujarat (LGD 511638)" if self.project_id == DEFAULT_LALPUR_PROJECT_ID else "Project locality recorded in project metadata",
                 "target_crs": "EPSG:4326 (WGS 84 / RFC 7946)",
                 "native_analysis_crs": "EPSG:3857 (Web Mercator)",
                 "provenance_disclaimer": PROVENANCE_DISCLAIMER,
@@ -516,5 +835,20 @@ class FeatureStore:
             "layers_updated": [k for k, v in layer_buckets.items() if v]
         }
 
+
+def get_project_store(project_id: Optional[str] = None, *, state_file_path: Optional[str] = None) -> FeatureStore:
+    """Returns a project-scoped FeatureStore; the Lalpur demo remains the default singleton."""
+    resolved_id = project_id or DEFAULT_LALPUR_PROJECT_ID
+    existing = PROJECT_STORES.get(resolved_id)
+    if existing is not None:
+        if state_file_path:
+            existing.state_file_path = state_file_path
+        return existing
+    resolved_state_path = state_file_path or (STATE_FILE_PATH if resolved_id == DEFAULT_LALPUR_PROJECT_ID else FeatureStore._default_state_file_for_project(resolved_id))
+    store_obj = FeatureStore(project_id=resolved_id, state_file_path=resolved_state_path)
+    PROJECT_STORES[resolved_id] = store_obj
+    return store_obj
+
+
 # Global singleton instance
-store = FeatureStore()
+store = FeatureStore(project_id=DEFAULT_LALPUR_PROJECT_ID)

@@ -51,6 +51,9 @@ WarningType = Literal[
     "overlapping_polygons",
     "building_road_spatial_overlap",
     "building_crosses_synthetic_parcel",
+    "building_crosses_parcel",
+    "building_outside_parcel",
+    "low_confidence_detection",
     "invalid_geometry",
     "empty_geometry",
     "sliver_polygon",
@@ -126,6 +129,8 @@ class ScoreRuleContribution(BaseModel):
     rule_name: str
     description: str
     points: int
+    evidence: Dict[str, Any] = Field(default_factory=dict)
+    suggested_actions: List[Dict[str, str]] = Field(default_factory=list)
 
 class ReviewScoreBreakdown(BaseModel):
     feature_id: str
@@ -145,6 +150,12 @@ class TopologyWarning(BaseModel):
     source: str = "synthetic_test"
     status: Literal["open", "resolved", "ignored"] = "open"
     affected_coordinates: Optional[List[float]] = None
+    rule: Optional[str] = None
+    evidence: Dict[str, Any] = Field(default_factory=dict)
+    tolerance: Dict[str, Any] = Field(default_factory=dict)
+    exceeds_tolerance_by: Dict[str, float] = Field(default_factory=dict)
+    detection_confidence: Optional[float] = None
+    suggested_action: Dict[str, str] = Field(default_factory=dict)
 
 class GeometryEditRequest(BaseModel):
     geometry: GeoJSONGeometry
@@ -167,7 +178,23 @@ class ModelPredictRequest(BaseModel):
     model_name: str = "giswqs/whu-building-unetplusplus-efficientnet-b4"
     model_version: str = "09df9efd323bbd3d56b98b4857129eb9b5baa2d3"
     confidence_threshold: float = 0.5
+    morphology_opening_px: Literal[0, 3, 5, 7] = 0
+    morphology_closing_px: Literal[0, 3, 5, 7] = 0
     simulate_failure: bool = False
+
+class ProjectInferenceRequest(BaseModel):
+    confidence_threshold: float = Field(default=0.5, ge=0.05, le=0.95)
+
+
+class GreeneryDetectRequest(BaseModel):
+    index_threshold: float = Field(default=0.15, ge=-1.0, le=2.0)
+    min_area_sqm: float = Field(default=5.0, ge=0.0, le=100000.0)
+    morphology_opening_px: Literal[0, 3, 5, 7] = 0
+    morphology_closing_px: Literal[0, 3, 5, 7] = 0
+
+
+class WarningNarrationRequest(BaseModel):
+    warning_ids: List[str] = Field(min_length=1, max_length=20)
 
 class ExportMetadata(BaseModel):
     export_timestamp: str

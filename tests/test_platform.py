@@ -39,7 +39,9 @@ from backend.services.topology import (
     check_polygon_overlaps,
     check_building_road_intersections,
     check_synthetic_parcel_crossings,
-    check_building_parcel_crossings
+    check_building_parcel_crossings,
+    check_buildings_outside_parcels,
+    check_low_confidence_detections,
 )
 from backend.services.synthetic import get_synthetic_test_features, SYNTHETIC_LAYER_DISCLAIMER
 from backend.services.scoring import calculate_review_score, load_scoring_config, aggregate_parcel_scores
@@ -311,6 +313,55 @@ class TestTopologyWarnings:
         parcel_warn = next(w for w in synth_warnings if w.warning_type == "building_crosses_synthetic_parcel")
         assert "SYN-BLD-PARCEL-CROSS-1" in parcel_warn.feature_ids
         assert "SYN-PARCEL-DEMO-1" in parcel_warn.feature_ids
+        assert parcel_warn.evidence["outside_area_m2"] > 0
+        assert parcel_warn.tolerance["value"] == 0.5
+        assert parcel_warn.suggested_action["action_type"] == "desk_review"
+
+    def test_generated_warnings_include_rule_evidence_tolerance_and_action(self, clean_store):
+        for warning in clean_store.warnings:
+            assert warning.rule
+            assert warning.evidence
+            assert warning.tolerance
+            assert warning.exceeds_tolerance_by
+            assert warning.suggested_action["action_type"]
+            assert warning.suggested_action["text"]
+
+    def test_outside_parcel_warning_reports_nearest_distance(self):
+        parcel = {
+            "type": "Feature", "id": "P-1", "properties": {},
+            "geometry": shapely.geometry.mapping(shapely.geometry.box(72.750, 23.040, 72.751, 23.041)),
+        }
+        building = {
+            "type": "Feature", "id": "B-1", "properties": {"source": "project_vaayu_sample"},
+            "geometry": shapely.geometry.mapping(shapely.geometry.box(72.752, 23.040, 72.753, 23.041)),
+        }
+
+        warnings = check_buildings_outside_parcels([building], [parcel])
+
+        assert len(warnings) == 1
+        warning = warnings[0]
+        assert warning.warning_type == "building_outside_parcel"
+        assert warning.evidence["distance_to_parcel_m"] > warning.tolerance["value"]
+        assert warning.evidence["nearest_parcel_id"] == "P-1"
+        assert warning.suggested_action["action_type"] == "mapping_initiation"
+        assert "not an enforcement action" in warning.suggested_action["text"]
+
+    def test_low_confidence_warning_reports_model_confidence(self):
+        feature = {
+            "type": "Feature", "id": "AI-1",
+            "properties": {"source": "ai_building_model", "confidence": 0.42},
+            "geometry": shapely.geometry.mapping(shapely.geometry.box(72.750, 23.040, 72.751, 23.041)),
+        }
+
+        warnings = check_low_confidence_detections([feature])
+
+        assert len(warnings) == 1
+        warning = warnings[0]
+        assert warning.warning_type == "low_confidence_detection"
+        assert warning.detection_confidence == 0.42
+        assert warning.evidence["confidence_threshold"] == 0.70
+        assert warning.exceeds_tolerance_by["confidence"] == pytest.approx(0.28)
+        assert warning.suggested_action["action_type"] == "desk_review"
 
     def test_empty_real_parcel_layer_never_produces_real_parcel_warnings(self, clean_store):
         real_parcel_warnings = [
@@ -353,6 +404,30 @@ class TestScoringEngine:
         assert "R_SPATIAL_OVERLAP_WARNING" in triggered_rule_ids
         assert "R_EXTREME_DIMENSIONS" in triggered_rule_ids
         assert breakdown.priority in ["medium", "high"]
+
+    def test_score_breakdown_carries_associated_warning_evidence(self):
+        feature = {
+            "type": "Feature", "id": "SCORE-EVIDENCE-01",
+            "properties": {"feature_id": "SCORE-EVIDENCE-01", "feature_type": "building", "source": "project_vaayu_sample"},
+        }
+        warning = {
+            "warning_id": "W-OVERLAP-SCORE",
+            "warning_type": "overlapping_polygons",
+            "evidence": {"overlap_area_m2": 4.25},
+            "tolerance": {"name": "overlap_area_m2", "value": 1.0, "unit": "m2"},
+            "suggested_action": {"action_type": "desk_review", "text": "Reconcile the footprints."},
+        }
+
+        breakdown = calculate_review_score(
+            feature,
+            associated_warning_ids=[warning["warning_id"]],
+            associated_warnings=[warning],
+        )
+
+        overlap_rule = next(rule for rule in breakdown.rules_triggered if rule.rule_id == "R_SPATIAL_OVERLAP_WARNING")
+        assert overlap_rule.evidence["warnings"][0]["evidence"]["overlap_area_m2"] == 4.25
+        assert overlap_rule.suggested_actions[0]["action_type"] == "desk_review"
+        assert "overlap_area_m2=4.25" in overlap_rule.description
 
     def test_approved_feature_score_reduction(self):
         sample_feat = {
@@ -1029,6 +1104,20 @@ class TestModelSprintRequirements:
         cleared = client.delete("/api/models/prediction-source").json()
         assert cleared["selected"] is False
         assert client.get("/api/models/discrepancy").json()["status"] == "no_predictions"
+
+    def test_provider_layers_remain_distinct_when_switching_sources(self, client):
+        mock_result = client.post("/api/models/predict", json={"mode": "mock"}).json()
+        mock_layer = client.get("/api/layers/ai_mock_predictions").json()
+        assert mock_result["metadata"]["provider_id"] == "mock"
+        assert len(mock_layer["features"]) == mock_result["detected_count"]
+
+        whu_result = client.post("/api/models/select-precomputed").json()
+        whu_layer = client.get("/api/layers/ai_whu_predictions").json()
+        assert whu_result["metadata"]["provider_id"] == "whu"
+        assert len(whu_layer["features"]) == 67
+        assert {feature["id"] for feature in mock_layer["features"]}.isdisjoint(
+            {feature["id"] for feature in whu_layer["features"]}
+        )
 
     def test_legacy_prediction_state_cannot_activate_without_metadata(self, tmp_path):
         import json

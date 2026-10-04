@@ -12,10 +12,13 @@ from typing import Dict, Any, List, Optional, Tuple, Union
 import os
 import json
 import time
+import hashlib
+import sys
 import numpy as np
 import shapely.geometry
 import shapely.ops
 import pyproj
+from backend.services.mask_cleanup import clean_binary_mask
 
 try:
     import rasterio
@@ -189,7 +192,9 @@ class WHUBuildingModel(BuildingModel):
         image_or_tile: Optional[Union[str, bytes]] = None,
         bounds: Optional[Tuple[float, float, float, float]] = None,
         confidence_threshold: float = 0.5,
-        simulate_failure: bool = False
+        simulate_failure: bool = False,
+        morphology_opening_px: int = 0,
+        morphology_closing_px: int = 0,
     ) -> Dict[str, Any]:
         if simulate_failure:
             raise ModelInferenceError(
@@ -198,7 +203,11 @@ class WHUBuildingModel(BuildingModel):
 
         try:
             from backend.services.whu_model import run_whu_live_inference
-            res = run_whu_live_inference(confidence_threshold=confidence_threshold)
+            res = run_whu_live_inference(
+                confidence_threshold=confidence_threshold,
+                morphology_opening_px=morphology_opening_px,
+                morphology_closing_px=morphology_closing_px,
+            )
             return {
                 "type": "FeatureCollection",
                 "name": res.get("name", "whu_predicted_buildings"),
@@ -341,19 +350,25 @@ class DeepLabBuildingModel(BuildingModel):
 
     @staticmethod
     def _resolve_checkpoint_path(checkpoint_path: Optional[str] = None, checkpoint_name: str = "spacenet") -> str:
-        candidates = []
         if checkpoint_path:
-            candidates.append(checkpoint_path)
+            candidates = [checkpoint_path]
+        else:
+            candidates = []
 
-        candidate_dirs = [
-            os.path.join("data", "models"),
-            os.path.join(".cache", "rgb-footprint-extract"),
-            os.path.join("models"),
-        ]
-        file_name = DeepLabBuildingModel.MODEL_CHECKPOINTS.get(checkpoint_name, DeepLabBuildingModel.MODEL_CHECKPOINTS["spacenet"])
-        for root in candidate_dirs:
-            for norm in [file_name, f"{checkpoint_name}_{file_name}", f"{file_name}.lfs"]:
-                candidates.append(os.path.join(root, norm))
+        if not checkpoint_path:
+            candidate_dirs = [
+                os.path.join("data", "models"),
+                os.path.join(".cache", "rgb-footprint-extract"),
+                os.path.join("models"),
+                os.path.join(
+                    "data", "local_model_run", "vendor", "rgb-footprint-extract",
+                    "weights", "spaceNet"
+                ),
+            ]
+            file_name = DeepLabBuildingModel.MODEL_CHECKPOINTS.get(checkpoint_name, DeepLabBuildingModel.MODEL_CHECKPOINTS["spacenet"])
+            for root in candidate_dirs:
+                for norm in [file_name, f"{checkpoint_name}_{file_name}", f"{file_name}.lfs"]:
+                    candidates.append(os.path.join(root, norm))
 
         for candidate in candidates:
             if not os.path.isfile(candidate):
@@ -395,15 +410,74 @@ class DeepLabBuildingModel(BuildingModel):
         return arr
 
     @staticmethod
+    def _load_checkpoint_model(checkpoint_path: str, device: Any):
+        """Load the pinned repository model without downloading redundant DRN weights."""
+        import torch
+
+        vendor_root = os.path.abspath(os.path.join(
+            "data", "local_model_run", "vendor", "rgb-footprint-extract"
+        ))
+        if not os.path.isdir(vendor_root):
+            raise ModelInferenceError(
+                "Pinned RGB Footprint Extract source is missing from the local vendor cache."
+            )
+        if vendor_root not in sys.path:
+            sys.path.insert(0, vendor_root)
+
+        try:
+            from models.deeplab.modeling import backbone as backbone_module
+            from models.deeplab.modeling.deeplab import DeepLab
+            original_builder = backbone_module.drn.drn_c_42
+            backbone_module.drn.drn_c_42 = lambda batch_norm: original_builder(
+                batch_norm, pretrained=False
+            )
+            try:
+                model = DeepLab(
+                    backbone="drn_c42",
+                    output_stride=8,
+                    num_classes=2,
+                    sync_bn=False,
+                    freeze_bn=False,
+                    dropout_low=0.3,
+                    dropout_high=0.5,
+                )
+            finally:
+                backbone_module.drn.drn_c_42 = original_builder
+
+            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+            state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+            if not isinstance(state_dict, dict):
+                raise ModelInferenceError("DeepLab checkpoint does not contain a state dictionary.")
+            normalized = {
+                key[7:] if key.startswith("module.") else key: value
+                for key, value in state_dict.items()
+            }
+            model.load_state_dict(normalized, strict=True)
+            model.to(device)
+            model.eval()
+            return model
+        except ModelInferenceError:
+            raise
+        except Exception as exc:
+            raise ModelInferenceError(
+                f"DeepLab checkpoint is incompatible with the pinned DRN-C42 loader: {exc}"
+            ) from exc
+
+    @staticmethod
     def _process_raster_to_probability(
         src_path: str,
+        model: Any,
+        device: Any,
         tile_size: int = 512,
         stride: int = 512,
         min_area_cutoff_sqm: float = 10.0,
         confidence_threshold: float = 0.5,
+        morphology_opening_px: int = 0,
+        morphology_closing_px: int = 0,
     ) -> Tuple[np.ndarray, Any, np.ndarray, Dict[str, Any]]:
         if rasterio is None:
             raise RuntimeError("Rasterio is required for the DeepLab candidate adapter.")
+        import torch
 
         with rasterio.open(src_path) as src:
             transform = src.transform
@@ -447,8 +521,17 @@ class DeepLabBuildingModel(BuildingModel):
                     tile_valid = valid_mask[y:y2, x:x2]
                     if tile.size == 0 or not np.any(tile_valid):
                         continue
-                    tile_prob = np.zeros((y2 - y, x2 - x), dtype=np.float32)
-                    tile_prob[tile_valid] = 0.75
+                    tile_input = torch.from_numpy(
+                        tile.astype(np.float32) / 255.0
+                    ).unsqueeze(0).to(device)
+                    with torch.no_grad():
+                        logits = model(tile_input)
+                        tile_prob = torch.softmax(logits, dim=1)[0, 1].cpu().numpy()
+                    tile_prob = np.asarray(tile_prob, dtype=np.float32)
+                    if tile_prob.shape != (y2 - y, x2 - x):
+                        raise RuntimeError(
+                            f"DeepLab output shape {tile_prob.shape} does not match tile {(y2 - y, x2 - x)}"
+                        )
                     tile_prob[~tile_valid] = 0.0
                     prob_sum[y:y2, x:x2] += tile_prob
                     weight_sum[y:y2, x:x2] += np.where(tile_valid, 1.0, 0.0)
@@ -459,6 +542,12 @@ class DeepLabBuildingModel(BuildingModel):
 
             binary_mask = (final_prob >= confidence_threshold).astype(np.uint8)
             binary_mask[~valid_mask] = 0
+            binary_mask = clean_binary_mask(
+                binary_mask,
+                opening_px=morphology_opening_px,
+                closing_px=morphology_closing_px,
+            )
+            binary_mask[~valid_mask] = 0
             return final_prob, transform, binary_mask, {"crs": crs, "height": height, "width": width, "valid_mask": valid_mask}
 
     def predict(
@@ -466,7 +555,9 @@ class DeepLabBuildingModel(BuildingModel):
         image_or_tile: Optional[Union[str, bytes]] = None,
         bounds: Optional[Tuple[float, float, float, float]] = None,
         confidence_threshold: float = 0.5,
-        simulate_failure: bool = False
+        simulate_failure: bool = False,
+        morphology_opening_px: int = 0,
+        morphology_closing_px: int = 0,
     ) -> Dict[str, Any]:
         if simulate_failure:
             raise ModelInferenceError(
@@ -482,19 +573,28 @@ class DeepLabBuildingModel(BuildingModel):
         except FileNotFoundError as exc:
             raise ModelInferenceError(str(exc))
 
-        raise ModelInferenceError(
-            f"DeepLab checkpoint resolved at '{checkpoint_path}', but no verified RGB Footprint Extract "
-            "inference loader is installed in this workspace. Refusing to emit synthetic or WHU-derived polygons."
-        )
+        import torch
 
-        run_id = f"run-deeplab-{int(time.time())}"
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        checkpoint_sha256 = hashlib.sha256()
+        with open(checkpoint_path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                checkpoint_sha256.update(chunk)
+        checkpoint_size = os.path.getsize(checkpoint_path)
+        model = self._load_checkpoint_model(checkpoint_path, device)
+
+        run_id = f"run-deeplab-spacenet-{int(time.time() * 1000)}"
         epsg_3857_to_4326 = pyproj.Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
         epsg_3857_to_32643 = pyproj.Transformer.from_crs("EPSG:3857", "EPSG:32643", always_xy=True)
 
         try:
             final_prob, transform, binary_mask, raster_info = self._process_raster_to_probability(
                 src_path=raster_path,
+                model=model,
+                device=device,
                 confidence_threshold=confidence_threshold,
+                morphology_opening_px=morphology_opening_px,
+                morphology_closing_px=morphology_closing_px,
             )
         except Exception as exc:
             raise ModelInferenceError(f"RGB Footprint Extract preprocessing error: {exc}")
@@ -546,6 +646,7 @@ class DeepLabBuildingModel(BuildingModel):
                     "notes": "RGB Footprint Extract candidate output — checkpoint loaded from external cache when available",
                     "checkpoint_path": checkpoint_path,
                     "checkpoint_name": self.checkpoint_name,
+                    "checkpoint_sha256": checkpoint_sha256.hexdigest(),
                     "repository_url": self.REPO_URL,
                     "repository_revision": self.REVISION,
                     "input_raster": raster_path,
@@ -553,24 +654,97 @@ class DeepLabBuildingModel(BuildingModel):
                 }
             })
 
+        run_dir = os.path.join("data", "local_model_run", "runs", "deeplab-spacenet", run_id)
+        os.makedirs(run_dir, exist_ok=True)
+        probability_path = os.path.join(run_dir, "probability.tif")
+        mask_path = os.path.join(run_dir, "mask.tif")
+        output_path = os.path.join(run_dir, "predictions.geojson")
+        with rasterio.open(
+            probability_path,
+            "w",
+            driver="GTiff",
+            height=final_prob.shape[0],
+            width=final_prob.shape[1],
+            count=1,
+            dtype="float32",
+            crs=raster_info["crs"],
+            transform=transform,
+            nodata=0.0,
+        ) as dst:
+            dst.write(final_prob.astype(np.float32), 1)
+        with rasterio.open(
+            mask_path,
+            "w",
+            driver="GTiff",
+            height=binary_mask.shape[0],
+            width=binary_mask.shape[1],
+            count=1,
+            dtype="uint8",
+            crs=raster_info["crs"],
+            transform=transform,
+            nodata=0,
+        ) as dst:
+            dst.write(binary_mask.astype(np.uint8), 1)
+
+        def file_hash(path: str) -> str:
+            digest = hashlib.sha256()
+            with open(path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+
+        input_sha256 = file_hash(raster_path)
+        metadata = {
+            "provider_id": "deeplab",
+            "provider_label": "DeepLabV3+ RGB Footprint Extract — SpaceNet",
+            "model_name": self.model_name,
+            "model_version": self.model_version,
+            "run_id": run_id,
+            "checkpoint_name": self.checkpoint_name,
+            "checkpoint_path": checkpoint_path,
+            "checkpoint_sha256": checkpoint_sha256.hexdigest(),
+            "checkpoint_bytes": checkpoint_size,
+            "repository_url": self.REPO_URL,
+            "repository_revision": self.REVISION,
+            "input_raster_path": raster_path,
+            "input_raster_sha256": input_sha256,
+            "crs": str(raster_info["crs"]),
+            "window_size": 512,
+            "stride": 512,
+            "preprocessing": "RGB HWC uint8 converted to CHW float32 [0,1]; valid zero/alpha pixels masked; no ImageNet normalization",
+            "confidence_threshold": confidence_threshold,
+            "morphology_opening_px": morphology_opening_px,
+            "morphology_closing_px": morphology_closing_px,
+            "min_area_cutoff_sqm": 10.0,
+            "device": str(device),
+            "detected_count": len(features),
+            "valid_feature_count": len(features),
+            "probability_path": probability_path,
+            "probability_sha256": file_hash(probability_path),
+            "mask_path": mask_path,
+            "mask_sha256": file_hash(mask_path),
+            "output_path": output_path,
+            "alignment_status": "confirmed by user in QGIS; local reference set, not an official/legal accuracy benchmark",
+            "inference_status": "success",
+        }
+        artifact = {
+            "type": "FeatureCollection",
+            "name": "deeplab_spacenet_predicted_buildings",
+            "model_metadata": metadata,
+            "features": features,
+        }
+        with open(output_path, "w", encoding="utf-8") as handle:
+            json.dump(artifact, handle, indent=2)
+        metadata["output_sha256"] = file_hash(output_path)
+        with open(os.path.join(run_dir, "MODEL_RUN.md"), "w", encoding="utf-8") as handle:
+            handle.write("# DeepLabV3+ SpaceNet Lalpur Run\n\n")
+            for key, value in metadata.items():
+                handle.write(f"- **{key}**: `{value}`\n")
+
         return {
             "type": "FeatureCollection",
             "name": "deeplab_predicted_buildings",
-            "model_metadata": {
-                "model_name": self.model_name,
-                "model_version": self.model_version,
-                "run_id": run_id,
-                "checkpoint_name": self.checkpoint_name,
-                "checkpoint_path": checkpoint_path,
-                "repository_url": self.REPO_URL,
-                "repository_revision": self.REVISION,
-                "confidence_threshold": confidence_threshold,
-                "input_raster_path": raster_path,
-                "detected_count": len(features),
-                "alignment_status": "confirmed by user in QGIS; local reference set, not an official/legal accuracy benchmark",
-                "output_path": os.path.join("data", "local_model_run", "deeplab_predicted_buildings_4326.geojson"),
-                "inference_status": "success" if features else "empty",
-            },
+            "model_metadata": metadata,
             "features": features,
         }
 

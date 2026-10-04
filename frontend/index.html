@@ -4,29 +4,196 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="SIH26012 Geospatial Feature-Review and Cadastral Demonstration Platform for Lalpur Village AOI.">
-  <title>SIH26012 — Geospatial Feature Review Platform</title>
+  <script>window.APP_BUILD_ID = 'sih-20261005-02';</script>
+  <title>LandParcel AI — SIH26012 Feature Review</title>
 
   <!-- Leaflet CSS (Local Vendor with CDN fallback) -->
-  <link rel="stylesheet" href="vendor/leaflet.css" onerror="this.onerror=null;this.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';" />
+  <link rel="stylesheet" href="vendor/leaflet.css?v=sih-20261005-02" onerror="this.onerror=null;this.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css?v=sih-20261005-02';" />
   <!-- App Stylesheet -->
-  <link rel="stylesheet" href="css/app.css">
+  <link rel="stylesheet" href="css/app.css?v=sih-20261005-02">
+  <!-- LandParcel visual theme; UI-only overrides, loaded after the base styles. -->
+  <link rel="stylesheet" href="css/landparcel-theme.css?v=sih-20261005-02">
 </head>
 <body>
+
+  <div id="project-open-error" class="project-open-error" role="alert" aria-live="assertive" hidden></div>
+
+  <div id="dashboard-view" class="dashboard-shell">
+    <aside class="dashboard-sidebar">
+      <div class="dashboard-brand">
+        <div class="brand-logo">LP</div>
+        <div>
+          <div class="dashboard-brand-title">LandParcel AI</div>
+          <div class="dashboard-brand-subtitle">SIH26012 · Geospatial feature review</div>
+        </div>
+      </div>
+
+      <nav class="dashboard-nav" aria-label="Dashboard sections">
+        <button class="dashboard-nav-item active" id="nav-dashboard" type="button">Dashboard</button>
+        <button class="dashboard-nav-item" id="nav-projects" type="button">Projects</button>
+        <button class="dashboard-nav-item" type="button" disabled>Data &amp; Models</button>
+        <button class="dashboard-nav-item" type="button" disabled>How to use</button>
+        <button class="dashboard-nav-item" type="button" disabled>About / Limitations</button>
+      </nav>
+    </aside>
+
+    <main class="dashboard-main">
+      <header class="dashboard-topbar">
+        <div>
+          <div class="dashboard-kicker">Project overview</div>
+          <h2>Demo Dashboard</h2>
+        </div>
+        <button class="btn btn-primary" id="btn-open-demo-primary" type="button">Open Lalpur Demo</button>
+      </header>
+
+      <section class="dashboard-hero">
+        <div class="dashboard-hero-copy">
+          <span class="hero-chip">Current working case</span>
+          <h1>Geospatial Feature Review Demo</h1>
+          <p>Open the Lalpur case study to inspect an orthomosaic, compare building-footprint suggestions with reference outlines, and review features on a map.</p>
+          <div class="hero-actions">
+            <button class="btn btn-primary" id="btn-open-demo-secondary" type="button">Open Lalpur Demo</button>
+            <button class="btn btn-secondary" id="btn-create-project" type="button">Create Project</button>
+          </div>
+        </div>
+
+        <div class="dashboard-preview-card">
+          <div class="preview-map-header">
+            <span>Lalpur pilot</span>
+            <span class="status-badge status-approved">Demo ready</span>
+          </div>
+          <div class="preview-map-surface">
+            <div class="preview-map-grid"></div>
+          </div>
+          <div class="preview-map-meta">
+            <span>Orthomosaic available</span>
+            <span>317 reference building footprints</span>
+            <span>Model output: experimental</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="dashboard-projects-section" id="projects-section">
+        <div class="dashboard-section-heading">
+          <div>
+            <div class="dashboard-kicker">Project library</div>
+            <h2>Your projects</h2>
+          </div>
+          <button class="btn btn-secondary" id="btn-create-project-list" type="button">Create Project</button>
+        </div>
+        <div class="dashboard-project-list" id="dashboard-project-list" aria-live="polite"></div>
+      </section>
+
+      <section class="project-card-row">
+        <article class="project-card featured-project">
+          <div class="project-card-head">
+            <div>
+              <div class="project-kicker">Lalpur, Gujarat</div>
+              <h3>Lalpur pilot</h3>
+            </div>
+            <span class="status-badge status-approved">Demo ready</span>
+          </div>
+
+          <div class="project-meta-grid">
+            <div><strong>Orthomosaic</strong><span>Available</span></div>
+            <div><strong>Reference footprints</strong><span>317</span></div>
+            <div><strong>Parcel layer</strong><span>Not available</span></div>
+            <div><strong>Model status</strong><span>Experimental</span></div>
+          </div>
+
+          <button class="btn btn-primary project-open-btn" id="btn-open-demo-card" type="button">Open working demo</button>
+        </article>
+
+        <article class="project-card future-project">
+          <div class="project-card-head">
+            <div>
+              <div class="project-kicker">Project workflow</div>
+              <h3>Raster preview</h3>
+            </div>
+            <span class="future-chip">Available</span>
+          </div>
+          <p>Create a project with a georeferenced EPSG:3857 GeoTIFF, validate its raster metadata, and open it in an isolated raster workspace.</p>
+          <div class="future-note">Review layers and inference remain Lalpur-only</div>
+        </article>
+      </section>
+
+      <section class="dashboard-strip">
+        <div class="step-pill">1. Open a project</div>
+        <div class="step-arrow">→</div>
+        <div class="step-pill">2. Compare reference and AI layers</div>
+        <div class="step-arrow">→</div>
+        <div class="step-pill">3. Review/edit/export GeoJSON</div>
+      </section>
+
+      <section class="dashboard-notes">
+        <article class="info-panel">
+          <h3>How the demo works</h3>
+          <ul>
+            <li>The current Lalpur case uses a local orthomosaic and review layers already loaded in this project.</li>
+            <li>Reference outlines are building footprint annotations for review, not official cadastral parcels.</li>
+            <li>Map operations keep AI suggestions and edited draft footprints separated by layer and provenance.</li>
+          </ul>
+        </article>
+
+        <article class="info-panel">
+          <h3>Honest limitations</h3>
+          <ul>
+            <li>No official parcel boundaries are included in the current dataset.</li>
+            <li>The current building models are experimental and not a validated legal or cadastral source.</li>
+            <li>AI polygons require human review; no ownership or encroachment decisions are made.</li>
+          </ul>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <dialog class="project-dialog" id="create-project-dialog" aria-labelledby="create-project-title">
+    <form id="create-project-form" class="project-dialog-form">
+      <div class="project-dialog-heading">
+        <div>
+          <div class="dashboard-kicker">New workspace</div>
+          <h2 id="create-project-title">Create a project</h2>
+        </div>
+        <button class="dialog-close" type="button" id="btn-close-project-dialog" aria-label="Close">×</button>
+      </div>
+      <label class="form-group">
+        <span class="form-label">Project name</span>
+        <input class="form-input" name="name" required maxlength="100" placeholder="e.g. North block survey">
+      </label>
+      <label class="form-group">
+        <span class="form-label">Locality</span>
+        <input class="form-input" name="locality" required maxlength="120" placeholder="Village, district, region">
+      </label>
+      <label class="form-group">
+        <span class="form-label">Orthomosaic GeoTIFF</span>
+        <input class="form-input" name="file" type="file" accept=".tif,.tiff,image/tiff" required>
+        <span class="project-form-hint">Georeferenced uint8 RGB GeoTIFF in EPSG:3857, up to 2 GiB. This opens as a raster workspace; Lalpur review layers stay separate.</span>
+      </label>
+      <div class="project-upload-status" id="project-upload-status" role="status" aria-live="polite"></div>
+      <div class="project-dialog-actions">
+        <button class="btn btn-secondary" type="button" id="btn-cancel-project">Cancel</button>
+        <button class="btn btn-primary" type="submit" id="btn-submit-project">Validate &amp; Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="app-shell" class="app-shell">
 
   <!-- Top App Navigation -->
   <header class="app-header">
     <div class="brand-section">
-      <div class="brand-logo">SIH</div>
+      <button class="dashboard-back-btn btn btn-secondary" id="btn-back-dashboard" type="button">← Dashboard</button>
+      <div class="brand-logo">LP</div>
       <div class="brand-info">
-        <h1>SIH26012 Feature Review</h1>
-        <p class="brand-subtitle">GIS Feature Validation Workspace</p>
+        <h1>LandParcel AI</h1>
+        <p class="brand-subtitle">SIH26012 · GIS Feature Review Workspace</p>
       </div>
     </div>
 
     <div class="header-status-group">
       <div class="locality-tag">
-        <strong>Lalpur Village</strong>
-        <span class="locality-lgd">• LGD 511638</span>
+        <strong id="workspace-project-name">Lalpur Village</strong>
+        <span class="locality-lgd" id="workspace-project-locality">LGD 511638</span>
       </div>
     </div>
 
@@ -35,8 +202,8 @@
       <details class="actions-menu" id="actions-menu">
         <summary class="btn btn-secondary actions-trigger">☰ Actions <span class="caret">▾</span></summary>
         <div class="actions-menu-list">
-          <button class="btn btn-secondary menu-item" id="btn-open-discrepancy-modal">⚖️ Model vs Ref Discrepancy</button>
-          <button class="btn btn-secondary menu-item" id="btn-open-model-modal">⚡ AI Building Model</button>
+          <button class="btn btn-secondary menu-item" id="btn-open-discrepancy-modal" data-reference-only hidden>⚖ Model vs Reference</button>
+          <button class="btn btn-secondary menu-item" id="btn-open-model-modal">AI Building Model</button>
           <button class="btn btn-secondary menu-item" id="btn-open-benchmark-modal">📊 Benchmark Datasets</button>
           <div class="menu-divider"></div>
           <div class="provenance-pill" id="pill-provenance-info" title="Click to view provenance notice and cadastral disclaimer">
@@ -57,128 +224,40 @@
     <!-- Left Sidebar: Layer Switcher & Basemap -->
     <aside class="left-sidebar">
       <div class="sidebar-scrollable">
-        <!-- Reference Layers -->
         <div>
           <div class="section-title">
-            <span>Reference Layers</span>
-            <span class="section-tag section-tag-blue">WGS 84 · 4326</span>
+            <span>Project Layers</span>
+            <span class="section-tag section-tag-blue">Manifest</span>
           </div>
-
-          <!-- Buildings Layer -->
-          <div class="layer-card">
-            <div class="layer-info">
-              <div class="layer-color-dot" style="background: #b48954;"></div>
-              <div class="layer-name-wrap">
-                <span class="layer-name">Building Footprints</span>
-                <span class="layer-meta"><span id="badge-count-buildings">317</span> features · unverified</span>
-              </div>
-            </div>
-            <label class="toggle-switch">
-              <input type="checkbox" id="toggle-buildings" checked>
-              <span class="toggle-slider"></span>
-            </label>
+          <div id="layer-manifest-container" aria-live="polite"></div>
+          <div id="project-empty-state" class="project-empty-state" hidden>
+            <strong>Run the AI building model on this imagery</strong>
+            <span>No AI footprints are available in this project yet.</span>
+            <button class="btn btn-primary" id="btn-model-sidebar-cta" type="button">AI Building Model</button>
           </div>
-
-          <!-- Road Corridors Layer -->
-          <div class="layer-card">
-            <div class="layer-info">
-              <div class="layer-color-dot" style="background: #f59e0b;"></div>
-              <div class="layer-name-wrap">
-                <span class="layer-name">Village Road Corridors</span>
-                <span class="layer-meta"><span id="badge-count-roads">19</span> polygons</span>
-              </div>
-            </div>
-            <label class="toggle-switch">
-              <input type="checkbox" id="toggle-roads" checked>
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
-          <!-- OSM Road Centerlines -->
-          <div class="layer-card">
-            <div class="layer-info">
-              <div class="layer-color-dot" style="background: #7c7b5d;"></div>
-              <div class="layer-name-wrap">
-                <span class="layer-name">OSM Road Centerlines</span>
-                <span class="layer-meta"><span id="badge-count-osm">5</span> lines · SH144</span>
-              </div>
-            </div>
-            <label class="toggle-switch">
-              <input type="checkbox" id="toggle-osm" checked>
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
-          <!-- Real Cadastral Parcels (Blank Template) -->
-          <div class="layer-card" title="Blank template: no official vector parcels exist for this AOI">
-            <div class="layer-info">
-              <div class="layer-color-dot" style="background: #64748b;"></div>
-              <div class="layer-name-wrap">
-                <span class="layer-name">Cadastral Parcels</span>
-                <span class="layer-meta"><span class="badge-zero">0 features</span></span>
-              </div>
-            </div>
-            <label class="toggle-switch">
-              <input type="checkbox" id="toggle-parcels">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
+          <details id="demo-about-run" class="demo-about-run" hidden>
+            <summary>About this run</summary>
+            <div class="demo-about-run-body" id="demo-about-run-body" aria-live="polite">Not available for this run</div>
+          </details>
         </div>
 
-        <!-- Demonstration & Inspection Layers -->
-        <div>
-          <div class="section-title">
-            <span>Review &amp; Demo Layers</span>
-            <span class="section-tag section-tag-purple">Testing</span>
-          </div>
-
-          <!-- Synthetic Test Layer -->
-          <div class="layer-card" title="Synthetic test data — not real parcels">
-            <div class="layer-info">
-              <div class="layer-color-dot" style="background: #b9895b;"></div>
-              <div class="layer-name-wrap">
-                <span class="layer-name">Synthetic test data</span>
-                <span class="layer-meta layer-meta-demo"><span class="badge-synth">DEMO ONLY</span> · <span id="badge-count-synthetic">8</span> feats</span>
-              </div>
-            </div>
-            <label class="toggle-switch">
-              <input type="checkbox" id="toggle-synthetic" checked>
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
-          <!-- User Drafts -->
-          <div class="layer-card">
-            <div class="layer-info">
-              <div class="layer-color-dot" style="background: #10b981;"></div>
-              <div class="layer-name-wrap">
-                <span class="layer-name">User Review Drafts</span>
-                <span class="layer-meta">Traced polygons</span>
-              </div>
-            </div>
-            <label class="toggle-switch">
-              <input type="checkbox" id="toggle-drafts" checked>
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
-          <!-- AI Model Predictions -->
-          <div class="layer-card">
-            <div class="layer-info">
-              <div class="layer-color-dot" style="background: #818cf8;"></div>
-              <div class="layer-name-wrap">
-                <span class="layer-name">AI Predicted Footprints</span>
-                <span class="layer-meta">Unet++ detections</span>
-              </div>
-            </div>
-            <label class="toggle-switch">
-              <input type="checkbox" id="toggle-ai" checked>
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
+        <div style="display:none;">
+          <input type="checkbox" id="toggle-buildings" checked>
+          <input type="checkbox" id="toggle-roads" checked>
+          <input type="checkbox" id="toggle-osm" checked>
+          <input type="checkbox" id="toggle-parcels">
+          <input type="checkbox" id="toggle-synthetic" checked>
+          <input type="checkbox" id="toggle-drafts" checked>
+          <input type="checkbox" id="toggle-ai-whu" checked>
+          <input type="checkbox" id="toggle-ai-deeplab" checked>
+          <input type="checkbox" id="toggle-ai-deeplab-finetuned">
+          <input type="checkbox" id="toggle-ai-mock">
+          <input type="checkbox" id="toggle-greenery">
+          <input type="checkbox" id="toggle-greenery-legacy" style="display:none;">
+          <div>DeepLab · Lalpur fine-tuned (experimental; in-sample)</div>
+          <div>Building-footprint reference; not parcels</div>
         </div>
 
-        <!-- Basemap Selection -->
         <div>
           <div class="section-title"><span>Basemap</span></div>
           <div class="basemap-group">
@@ -188,13 +267,9 @@
           </div>
         </div>
 
-        <!-- Orthomosaic Status Card -->
         <div class="raster-status-card">
           <div id="raster-status-text">
-            <strong>Drone Raster (GeoTIFF):</strong> lalpur_orthomosaic.tif (3.38 cm GSD)<br>
-            <span style="font-size: 10.5px; color: var(--text-faint);">
-              Georeferenced EPSG:3857 4-band orthomosaic loaded via local tiled XYZ service.
-            </span>
+            <strong>Raster status:</strong> project orthomosaic readiness is reported from the active project metadata.
           </div>
         </div>
       </div>
@@ -221,13 +296,17 @@
         <button class="map-control-btn" id="btn-tool-pan" title="Drag the map to pan">
           ✥ Pan
         </button>
+        <button class="map-control-btn map-control-model" id="btn-open-model-modal-toolbar" type="button" title="Run a building-footprint model on this project">
+          ▦ AI Building Model
+        </button>
       </div>
 
       <!-- Bottom Topology Warning Drawer -->
       <section class="bottom-warning-tray" id="bottom-warning-tray-container"></section>
 
       <!-- AOI / imagery info chip -->
-      <div class="map-info-chip">Lalpur AOI · imagery GSD 3.38 cm</div>
+      <div class="map-info-chip" id="workspace-map-info">Lalpur AOI · imagery GSD 3.38 cm</div>
+      <div id="project-imagery-error" class="project-imagery-error" hidden></div>
     </section>
 
     <!-- Right Sidebar: Feature Inspector -->
@@ -242,16 +321,6 @@
       </div>
     </aside>
   </main>
-
-  <!-- Bottom Status Bar -->
-  <footer class="app-statusbar">
-    <div class="statusbar-left">
-      <strong>EPSG:4326</strong> · RFC 7946 GeoJSON · Lalpur AOI
-    </div>
-    <div class="statusbar-right">
-      <strong id="status-zoom">Zoom 18</strong> · 3.38 cm GSD · <span class="status-online">● Online</span>
-    </div>
-  </footer>
 
   <!-- ==============================================================================
        Modals
@@ -288,45 +357,47 @@
     </div>
   </div>
 
-  <!-- 2. AI Building Model Modal -->
-  <div class="modal-overlay" id="modal-ai-model">
-    <div class="modal-window">
-      <div class="modal-header">
-        <h2>AI Building Model Inference Provider</h2>
-        <button class="modal-close-btn modal-close-trigger">&times;</button>
+  <!-- 2. Project building-model dialog -->
+  <dialog class="project-dialog ai-model-dialog" id="modal-ai-model" aria-labelledby="ai-model-title">
+    <div class="project-dialog-heading ai-model-heading">
+      <div>
+        <div class="dashboard-kicker">Building footprints</div>
+        <h2 id="ai-model-title">AI Building Model</h2>
       </div>
-      <div class="modal-body">
-        <p>Test the building model inference adapter (<code>BuildingModel.predict</code>) on the Lalpur study area. Extracts building candidate footprints and tags them with <code>source=ai_building_model</code>.</p>
-        
-        <div class="form-group">
-          <label class="form-label">Model Architecture</label>
-          <select class="form-input" id="model-select">
-            <option value="whu">WHU U-Net++ EfficientNet-B4 (Lalpur baseline)</option>
-            <option value="deeplab">RGB Footprint Extract DeepLabV3+ (SpaceNet checkpoint)</option>
-          </select>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Confidence Threshold</label>
-          <div style="display: flex; align-items: center; gap: 12px;">
-            <input type="range" id="model-conf-slider" min="0.3" max="0.95" step="0.05" value="0.5" style="flex: 1;" oninput="document.getElementById('conf-val').innerText = this.value">
-            <span id="conf-val" style="font-family: var(--font-mono); font-weight: 600;">0.50</span>
-          </div>
-        </div>
-
-        <div class="form-group" style="flex-direction: row; align-items: center; gap: 8px; margin-top: 6px;">
-          <input type="checkbox" id="model-simulate-failure">
-          <label for="model-simulate-failure" style="font-size: 11.5px; color: var(--accent-rose); cursor: pointer;">Simulate Model Inference Failure (Demonstrate UI error handling)</label>
-        </div>
-
-        <div id="model-inference-status" style="margin-top: 10px; min-height: 40px; font-size: 12px;"></div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-secondary modal-close-trigger">Close</button>
-        <button class="btn btn-primary" id="btn-run-inference">Run Inference ⚡</button>
-      </div>
+      <button class="dialog-close" type="button" id="btn-close-ai-model" aria-label="Close model dialog">×</button>
     </div>
-  </div>
+    <div class="ai-model-dialog-body">
+      <div class="model-provider-list" id="model-provider-cards" role="radiogroup" aria-label="Building model provider"></div>
+      <div class="model-run-fields">
+        <fieldset class="model-area-fieldset">
+          <legend>Area</legend>
+          <label><input type="radio" name="model-area-mode" value="whole" checked> Whole image</label>
+          <label><input type="radio" name="model-area-mode" value="draw"> Draw area</label>
+          <button class="btn btn-secondary" id="btn-model-draw-area" type="button">Draw rectangle on map</button>
+          <div class="model-area-estimate" id="model-area-estimate" aria-live="polite">Choose a provider to estimate tiles.</div>
+        </fieldset>
+        <label class="model-field">
+          <span>Confidence threshold <output id="model-threshold-value">0.50</output></span>
+          <input type="range" id="model-conf-slider" min="0.10" max="0.95" step="0.05" value="0.50">
+        </label>
+        <details class="model-advanced">
+          <summary>Advanced</summary>
+          <label class="model-field">Inference resolution (m/pixel)
+            <input class="form-input" id="model-resolution-m" type="number" min="0.01" max="10" step="0.01" value="0.30">
+          </label>
+          <label class="model-field">Minimum building area (m²)
+            <input class="form-input" id="model-min-area" type="number" min="0" step="1" value="10">
+          </label>
+        </details>
+      </div>
+      <p class="model-review-note">AI output is a suggestion for human review. Accuracy depends on imagery resolution and location.</p>
+      <div id="model-inference-status" class="model-inference-status" role="status" aria-live="polite"></div>
+    </div>
+    <div class="project-dialog-actions ai-model-actions">
+      <button class="btn btn-secondary" type="button" id="btn-cancel-ai-model">Close</button>
+      <button class="btn btn-primary" type="button" id="btn-run-inference" disabled>Run model</button>
+    </div>
+  </dialog>
 
   <!-- 3. Benchmark Datasets Modal -->
   <div class="modal-overlay" id="modal-benchmarks">
@@ -345,7 +416,7 @@
   </div>
 
   <!-- 4. Model vs Reference Discrepancy Modal -->
-  <div class="modal-overlay" id="modal-discrepancy">
+  <div class="modal-overlay" id="modal-discrepancy" data-reference-only hidden>
     <div class="modal-window" style="max-width: 680px;">
       <div class="modal-header">
         <h2>Model vs Reference Discrepancies</h2>
@@ -364,9 +435,9 @@
   <div class="toast-container" id="toast-container"></div>
 
   <!-- Leaflet JS (Local Vendor with CDN fallback) -->
-  <script src="vendor/leaflet.js" onerror="this.onerror=null;this.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';"></script>
+  <script src="vendor/leaflet.js?v=sih-20261005-02" onerror="this.onerror=null;this.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js?v=sih-20261005-02';"></script>
   <!-- Application Bootstrap -->
-  <script type="module" src="js/app.js"></script>
+  <script type="module" src="js/app.js?v=sih-20261005-02"></script>
 
   <!-- Close the Actions dropdown on outside click / after choosing an item -->
   <script>
@@ -380,6 +451,33 @@
       });
     })();
   </script>
+
+  </div>
+
+  <!-- Global footer and diagnostics stay available if opening fails on the dashboard. -->
+  <footer class="app-statusbar">
+    <div class="statusbar-left">
+      <strong id="status-crs">EPSG:4326</strong> · RFC 7946 GeoJSON · <span id="status-location">No project open</span>
+    </div>
+    <div class="statusbar-right">
+      <strong id="status-zoom">Zoom 18</strong> · <span id="status-gsd">GSD unavailable</span> · <span class="status-online">● Online</span> · <span id="app-build-id">build: sih-20261005-02</span>
+      <button class="status-diagnostics-link" id="btn-open-diagnostics" type="button">Diagnostics</button>
+    </div>
+  </footer>
+
+  <dialog id="diagnostics-dialog" class="project-dialog">
+    <div class="project-dialog-heading">
+      <div>
+        <div class="dashboard-kicker">Debug output</div>
+        <h2>Diagnostics</h2>
+      </div>
+      <button class="dialog-close" type="button" id="btn-close-diagnostics" aria-label="Close diagnostics">×</button>
+    </div>
+    <textarea id="diagnostics-output" rows="16" style="width: min(680px, 70vw); resize: vertical; font-family: var(--font-mono, monospace);"></textarea>
+    <div class="project-dialog-actions">
+      <button class="btn btn-secondary" type="button" id="btn-copy-diagnostics">Copy</button>
+    </div>
+  </dialog>
 
 </body>
 </html>

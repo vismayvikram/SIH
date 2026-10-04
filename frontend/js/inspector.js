@@ -2,7 +2,7 @@
  * SIH26012 Platform - Feature Inspector Controller
  * Renders feature metadata, review status buttons, score gauge, audit trail, and vertex edit controls.
  */
-import { ApiClient } from './api.js';
+import { ApiClient } from './api.js?v=sih-20261005-02';
 
 export class FeatureInspector {
   constructor(containerId, options = {}) {
@@ -11,7 +11,9 @@ export class FeatureInspector {
     this.onGeometrySaved = options.onGeometrySaved || (() => {});
     this.onGeometryReverted = options.onGeometryReverted || (() => {});
     this.onStartVertexEdit = options.onStartVertexEdit || (() => {});
+    this.onCancelVertexEdit = options.onCancelVertexEdit || (() => {});
     this.onWarningClick = options.onWarningClick || (() => {});
+    this.getProjectId = options.getProjectId || (() => null);
 
     this.currentFeatureId = null;
     this.currentFeature = null;
@@ -29,6 +31,27 @@ export class FeatureInspector {
         <p style="font-size: 11px; margin-top: 6px;">Click on any building footprint, road polygon, OSM centerline, or synthetic fixture to review details and edit boundaries.</p>
       </div>
     `;
+  }
+
+  renderWarningEvidence(warning) {
+    const evidence = Object.entries(warning.evidence || {}).map(([name, value]) =>
+      `<div><span>${this.escapeHtml(name.replace(/_/g, ' '))}</span><strong>${this.escapeHtml(typeof value === 'number' ? value.toFixed(3) : value)}</strong></div>`
+    ).join('');
+    const tolerance = warning.tolerance || {};
+    const action = warning.suggested_action || {};
+    if (!evidence && !tolerance.name && !action.text) return '';
+    return `
+      <div class="warning-evidence">
+        ${evidence}
+        ${tolerance.name ? `<div><span>Review tolerance</span><strong>${this.escapeHtml(tolerance.name.replace(/_/g, ' '))}: ${this.escapeHtml(tolerance.value)} ${this.escapeHtml(tolerance.unit || '')}</strong></div>` : ''}
+        ${action.text ? `<div class="warning-action"><span class="status-badge">${this.escapeHtml(action.action_type || 'review')}</span><strong>${this.escapeHtml(action.text)}</strong></div>` : ''}
+      </div>`;
+  }
+
+  escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (character) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[character]);
   }
 
   async loadFeature(featureId, layerName) {
@@ -50,7 +73,10 @@ export class FeatureInspector {
     `;
 
     try {
-      const details = await ApiClient.getFeatureDetails(featureId);
+      const projectId = this.getProjectId();
+      const details = projectId && projectId !== 'SIH26012_INDIA_CANDIDATE_01_LALPUR'
+        ? await ApiClient.getProjectFeatureDetails(projectId, featureId)
+        : await ApiClient.getFeatureDetails(featureId);
       this.currentDetails = details;
       this.currentFeature = details.feature;
       this.render();
@@ -192,6 +218,7 @@ export class FeatureInspector {
                     <span>${w.warning_type}</span>
                   </div>
                   <div class="warning-desc">${w.explanation}</div>
+                  ${this.renderWarningEvidence(w)}
                 </div>
                 <button class="btn btn-secondary btn-icon btn-zoom-warning" title="Focus Conflict" data-wid="${w.warning_id}">🔍</button>
               </div>
@@ -233,6 +260,7 @@ export class FeatureInspector {
 
             <div style="display: flex; gap: 8px; margin-top: 4px;">
               <button class="btn btn-primary" id="btn-save-geometry" style="flex: 1;" disabled>Save Geometry</button>
+              <button class="btn btn-secondary" id="btn-cancel-geometry" style="flex: 1;">Cancel</button>
               <button class="btn btn-secondary" id="btn-revert-geometry" style="flex: 1;" ${hasEdits ? '' : 'disabled'}>Revert</button>
             </div>
           </div>
@@ -266,16 +294,30 @@ export class FeatureInspector {
     // Geometry edit buttons
     const btnStartEdit = document.getElementById('btn-start-edit');
     const btnSaveGeom = document.getElementById('btn-save-geometry');
+    const btnCancelGeom = document.getElementById('btn-cancel-geometry');
     const btnRevertGeom = document.getElementById('btn-revert-geometry');
     const reasonInput = document.getElementById('edit-reason-input');
 
     if (btnStartEdit) btnStartEdit.onclick = () => this.onStartVertexEdit();
+    if (btnCancelGeom) {
+      btnCancelGeom.onclick = () => {
+        this.pendingGeometry = null;
+        const statusText = document.getElementById('geometry-edit-status');
+        if (statusText) statusText.innerHTML = '<span style="color: var(--accent-amber)">● Vertex edits cancelled.</span>';
+        this.onCancelVertexEdit();
+      };
+    }
     if (btnSaveGeom) {
       btnSaveGeom.onclick = async () => {
         if (!this.pendingGeometry) return;
         const reason = reasonInput ? reasonInput.value : 'Manual vertex edit';
         try {
-          await ApiClient.saveGeometryEdit(this.currentFeatureId, this.pendingGeometry, reason, 'demo-reviewer');
+          const projectId = this.getProjectId();
+          if (projectId && projectId !== 'SIH26012_INDIA_CANDIDATE_01_LALPUR') {
+            await ApiClient.saveProjectGeometryEdit(projectId, this.currentFeatureId, this.pendingGeometry, reason, 'demo-reviewer');
+          } else {
+            await ApiClient.saveGeometryEdit(this.currentFeatureId, this.pendingGeometry, reason, 'demo-reviewer');
+          }
           this.pendingGeometry = null;
           await this.loadFeature(this.currentFeatureId, this.currentDetails.layer);
           this.onGeometrySaved(this.currentFeatureId);
@@ -288,7 +330,12 @@ export class FeatureInspector {
     if (btnRevertGeom) {
       btnRevertGeom.onclick = async () => {
         try {
-          await ApiClient.revertGeometry(this.currentFeatureId);
+          const projectId = this.getProjectId();
+          if (projectId && projectId !== 'SIH26012_INDIA_CANDIDATE_01_LALPUR') {
+            await ApiClient.revertProjectGeometry(projectId, this.currentFeatureId);
+          } else {
+            await ApiClient.revertGeometry(this.currentFeatureId);
+          }
           await this.loadFeature(this.currentFeatureId, this.currentDetails.layer);
           this.onGeometryReverted(this.currentFeatureId);
         } catch (err) {
@@ -312,7 +359,12 @@ export class FeatureInspector {
     const notesInput = document.getElementById('inspector-notes-input');
     const notes = notesInput ? notesInput.value : '';
     try {
-      await ApiClient.updateFeatureStatus(this.currentFeatureId, newStatus, notes, 'demo-reviewer');
+      const projectId = this.getProjectId();
+      if (projectId && projectId !== 'SIH26012_INDIA_CANDIDATE_01_LALPUR') {
+        await ApiClient.updateProjectFeatureStatus(projectId, this.currentFeatureId, newStatus, notes, 'demo-reviewer');
+      } else {
+        await ApiClient.updateFeatureStatus(this.currentFeatureId, newStatus, notes, 'demo-reviewer');
+      }
       await this.loadFeature(this.currentFeatureId, this.currentDetails.layer);
       this.onStatusChanged(this.currentFeatureId, newStatus);
     } catch (err) {
